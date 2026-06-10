@@ -5,11 +5,20 @@ to its subscribers, implementing the ideas in
 [ATOM (draft-nandakumar-atproto-atom)](https://datatracker.ietf.org/doc/draft-nandakumar-atproto-atom/).
 Rust first; TypeScript (browser + server) to follow.
 
-Status: early prototype. A passthrough relay (`relay`) ingests a
-`com.atproto.sync.subscribeRepos` WebSocket firehose and republishes frames
-byte-for-byte on a MoQ broadcast; `moq-tail` / `ws-tail` capture either side
-for differential verification. Verified end-to-end against the live Bluesky
-firehose through kixelated's public CDN:
+Status: early prototype. One binary, `lastproto`, with a
+[goat](https://github.com/bluesky-social/goat)-shaped CLI:
+
+```
+lastproto relay --moq-host https://cdn.moq.dev/anon/<scope>   # bridge wss://bsky.network -> MoQ
+lastproto firehose --moq-host https://cdn.moq.dev/anon/<scope> # consume it from anywhere
+lastproto firehose                                             # plain WS consumer, like goat firehose
+```
+
+Frames are republished byte-for-byte (verified against the live Bluesky
+firehose through kixelated's public CDN), both legs auto-reconnect, the
+upstream cursor persists via `--cursor-file`, and consumers survive
+publisher restarts. See [docs/going-live.md](docs/going-live.md) for running
+this as a service.
 
 ```
 just live-relay   # wss://bsky.network -> cdn.moq.dev/anon/lastproto-demo

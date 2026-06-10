@@ -23,8 +23,9 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn parse(raw: Vec<u8>) -> Result<Frame> {
-        let mut cursor = Cursor::new(raw.as_slice());
+    /// Decode the two CBOR objects (header, payload) of a wire frame.
+    pub fn decode(raw: &[u8]) -> Result<(Value, Value)> {
+        let mut cursor = Cursor::new(raw);
         let header: Value =
             ciborium::de::from_reader(&mut cursor).context("decoding frame header")?;
         let payload: Value =
@@ -36,6 +37,11 @@ impl Frame {
                 raw.len()
             );
         }
+        Ok((header, payload))
+    }
+
+    pub fn parse(raw: Vec<u8>) -> Result<Frame> {
+        let (header, payload) = Frame::decode(&raw)?;
 
         let op = map_get(&header, "op")
             .and_then(Value::as_integer)

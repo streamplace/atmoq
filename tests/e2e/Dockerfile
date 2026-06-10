@@ -14,9 +14,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --bins \
-    && mkdir -p /out \
-    && cp target/release/ws-tail target/release/moq-tail target/release/relay /out/ \
-    && mv /out/relay /out/lastproto-relay
+    && mkdir -p /out && cp target/release/lastproto /out/
 
 FROM golang:1.26-trixie AS gobuild
 # Pinned to the commit checked out in ~/code/indigo during planning.

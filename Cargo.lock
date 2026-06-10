@@ -1189,6 +1189,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "clap",
+ "data-encoding",
  "futures-util",
  "moq-native",
  "moq-net",

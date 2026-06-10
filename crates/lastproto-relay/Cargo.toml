@@ -12,6 +12,7 @@ base64.workspace = true
 bytes = "1"
 ciborium.workspace = true
 clap.workspace = true
+data-encoding = "2"
 futures-util.workspace = true
 moq-native = "0.17"
 moq-net = "0.1"

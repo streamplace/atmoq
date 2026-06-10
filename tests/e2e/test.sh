@@ -36,7 +36,7 @@ docker exec "$NAME" test -f /tmp/ready
 
 echo "starting MoQ tail (live subscriber)..."
 docker exec -d "$NAME" bash -c \
-  'moq-tail http://localhost:4443 --idle-ms 8000 >/tmp/moq.jsonl 2>/tmp/moq-tail.log'
+  'lastproto firehose --moq-host http://localhost:4443 --raw --idle-ms 8000 >/tmp/moq.jsonl 2>/tmp/moq-tail.log'
 
 echo "driving writes..."
 docker exec "$NAME" node /app/harness/driver.mjs >/tmp/lastproto-driver.json
@@ -48,7 +48,7 @@ docker exec "$NAME" node /app/harness/capture.mjs >/tmp/lastproto-capture.jsonl
 
 echo "capturing PDS firehose directly (ground truth)..."
 docker exec "$NAME" bash -c \
-  'ws-tail ws://localhost:2583 --cursor 0 --idle-ms 3000 >/tmp/pds.jsonl 2>/dev/null'
+  'lastproto firehose --relay-host ws://localhost:2583 --cursor 0 --raw --idle-ms 3000 >/tmp/pds.jsonl 2>/dev/null'
 
 echo "verifying indigo capture against driver expectations..."
 docker cp /tmp/lastproto-driver.json "$NAME":/tmp/driver.json >/dev/null
