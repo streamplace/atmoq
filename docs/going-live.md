@@ -4,16 +4,16 @@ Short answer: **yes, you can do this today, with one binary and zero
 infrastructure of your own.**
 
 ```bash
-lastproto relay \
+atmoq relay \
   --relay-host wss://bsky.network \
   --moq-host https://cdn.moq.dev/anon/<unguessable-scope> \
-  --cursor-file /var/lib/lastproto/cursor
+  --cursor-file /var/lib/atmoq/cursor
 ```
 
 Anyone, anywhere, can then consume the firehose over MoQ:
 
 ```bash
-lastproto firehose --moq-host https://cdn.moq.dev/anon/<unguessable-scope>
+atmoq firehose --moq-host https://cdn.moq.dev/anon/<unguessable-scope>
 ```
 
 The relay is a verbatim passthrough (frames byte-identical to the upstream,
@@ -44,7 +44,7 @@ consumers survive publisher restarts.
   increasing order of effort:
   1. unguessable scope shared out-of-band (what we do now);
   2. a JWT-scoped path from kixelated's `moq-token` (cdn.moq.dev supports
-     this — ask him for a signing root for a `lastproto/` prefix);
+     this — ask him for a signing root for a `atmoq/` prefix);
   3. run your own `moq-relay` (it's a small Rust binary; the e2e container
      runs one) and let the public CDNs peer/cache in front later.
 - **Courtesy.** cdn.moq.dev is a free 3-node preview CDN. A 24/7 full-mainnet

@@ -1,5 +1,5 @@
 # E2E harness: local atproto network (PLC + PDS) + indigo relay (the oracle)
-# + lastproto binaries, all in one container on localhost so DID-document URLs
+# + atmoq binaries, all in one container on localhost so DID-document URLs
 # resolve everywhere.
 #
 # Build context is the REPO ROOT (see test.sh / justfile):
@@ -14,7 +14,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --bins \
-    && mkdir -p /out && cp target/release/lastproto /out/
+    && mkdir -p /out && cp target/release/atmoq /out/
 
 FROM golang:1.26-trixie AS gobuild
 # Pinned to the commit checked out in ~/code/indigo during planning.

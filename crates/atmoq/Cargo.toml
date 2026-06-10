@@ -1,5 +1,5 @@
 [package]
-name = "lastproto-relay"
+name = "atmoq"
 description = "atproto relay over MoQ transport (prototype)"
 version.workspace = true
 edition.workspace = true

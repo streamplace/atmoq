@@ -131,6 +131,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "atmoq"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bytes",
+ "ciborium",
+ "clap",
+ "data-encoding",
+ "futures-util",
+ "moq-native",
+ "moq-net",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1178,29 +1201,6 @@ checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
 dependencies = [
  "bitflags",
  "libc",
-]
-
-[[package]]
-name = "lastproto-relay"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "base64",
- "bytes",
- "ciborium",
- "clap",
- "data-encoding",
- "futures-util",
- "moq-native",
- "moq-net",
- "rustls",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.24.0",
- "tracing",
- "tracing-subscriber",
- "url",
 ]
 
 [[package]]

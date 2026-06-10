@@ -1,12 +1,13 @@
-# lastproto implementation plan
+# atmoq implementation plan
 
 An atproto relay over MoQ transport, implementing the ideas in
 [ATOM (draft-nandakumar-atproto-atom-00)](https://www.ietf.org/archive/id/draft-nandakumar-atproto-atom-00.txt),
 in Rust, with a TypeScript implementation (browser + server) to follow.
 
-Status: **planning**. No implementation yet. See [docs/atom-spec-notes.md](docs/atom-spec-notes.md)
-for a detailed review of the ATOM draft against the atproto specs, including the places
-where we intend to deviate.
+Status: **prototype** — the `atmoq` CLI bridges a WS firehose onto MoQ byte-exactly
+(see README); validation/sequencing milestones below are still ahead. See
+[docs/atom-spec-notes.md](docs/atom-spec-notes.md) for a detailed review of the ATOM
+draft against the atproto specs, including the places where we intend to deviate.
 
 ## 1. Source documents
 
@@ -39,7 +40,7 @@ publishing `at/firehose/{host}/...` namespaces directly; in reality our relay is
 bridge:
 
 ```
-                          ┌──────────────────────── lastproto relay ───────────────────────┐
+                          ┌──────────────────────── atmoq relay ───────────────────────┐
  PDS A ──WS firehose──▶   │ ingest (WS client)                                              │
  PDS B ──WS firehose──▶   │   → validate (at-sync §4.5: sig, rev, prevData, op inversion)   │
  PDS C ──WS firehose──▶   │   → sequence (monotonic seq, group-aligned disk log)            │
@@ -53,7 +54,7 @@ bridge:
                           (incl. downstream MoQ relays)        (unchanged, WS)
 ```
 
-Keeping the legacy WS output is deliberate: it makes lastproto a drop-in indigo
+Keeping the legacy WS output is deliberate: it makes atmoq a drop-in indigo
 replacement, gives the ecosystem a migration path, and — most importantly for us — makes
 differential testing trivial (same events out both pipes, byte-comparable against
 indigo). The validation/sequencing core is transport-agnostic; transports are adapters.
@@ -72,21 +73,21 @@ indigo). The validation/sequencing core is transport-agnostic; transports are ad
 ### 3.1 Workspace layout (proposed)
 
 ```
-lastproto/
+atmoq/
 ├── crates/
-│   ├── lastproto-repo      # atproto data layer: deterministic CBOR, CID, TID, NSID,
+│   ├── atmoq-repo      # atproto data layer: deterministic CBOR, CID, TID, NSID,
 │   │                       # CAR read/write, MST + operation inversion, commit sig verify.
 │   │                       # (Or a thin wrapper over an existing crate — see §6 Q5.)
-│   ├── lastproto-sync      # at-sync semantics: message types, frame codec, validation
+│   ├── atmoq-sync      # at-sync semantics: message types, frame codec, validation
 │   │                       # state machine (§4.5), account/host status model. Pure logic,
 │   │                       # no I/O — this is the part the TS impl will mirror.
-│   ├── lastproto-atom      # ATOM mapping: track/namespace naming, group/object layout,
+│   ├── atmoq-atom      # ATOM mapping: track/namespace naming, group/object layout,
 │   │                       # extension headers (at-seq, at-event-type, ...), priorities,
 │   │                       # cursor⇄(group,object) index. Transport-agnostic data plane.
-│   ├── lastproto-relay     # The binary: WS ingest (slurper), identity resolution +
+│   ├── atmoq     # The binary: WS ingest (slurper), identity resolution +
 │   │                       # caching, sequencer, disk event log, MOQT publisher, legacy
 │   │                       # WS server, XRPC + admin HTTP API, metrics.
-│   └── lastproto-client    # Consumer library: subscribe via MOQT, gap-detect, FETCH
+│   └── atmoq-client    # Consumer library: subscribe via MOQT, gap-detect, FETCH
 │                           # recovery, re-materialize the standard event stream. Used by
 │                           # the e2e tests; the seed of the future TS client API.
 ├── docs/
@@ -145,7 +146,7 @@ Parity with indigo where it's ecosystem-facing:
 
 ### 3.4 TypeScript implementation (later, but shapes today's decisions)
 
-- Keep `lastproto-sync` and `lastproto-atom` free of I/O and OS dependencies so their
+- Keep `atmoq-sync` and `atmoq-atom` free of I/O and OS dependencies so their
   logic ports cleanly; encode all of their behavior in **language-agnostic test vectors**
   (JSON/CBOR fixture files in this repo) that both implementations must pass.
 - The TS package targets one API across browser (WebTransport) and server (raw QUIC or
@@ -164,7 +165,7 @@ from native + browser, confirm where per-event metadata should live and what eac
 relay's dialect tolerates; (b) evaluate atproto crates (§6 Q5) by running their
 MST/CAR code against the interop test vectors. Outcomes recorded in `docs/decisions/`.
 
-**M1 — atproto data layer.** `lastproto-repo` (build or wrap): deterministic CBOR
+**M1 — atproto data layer.** `atmoq-repo` (build or wrap): deterministic CBOR
 encode/verify, CID, TID, CAR streaming reader/writer, MST construction + **operation
 inversion**, commit signature verify (p256 + k256, low-S). Validated against
 [bluesky-social/atproto-interop-tests](https://github.com/bluesky-social/atproto-interop-tests)
@@ -178,8 +179,8 @@ real PDS (or dev-env PDS) and validate everything indigo validates, with a scena
 suite ported from `indigo/cmd/relay/testing/`.
 
 **M3 — Outputs.** (a) Legacy WS `subscribeRepos` including cursor backfill semantics —
-at this point lastproto is a usable indigo replacement; (b) MoQ publisher: broadcast
-announce, four event tracks + combined track, group rotation; (c) `lastproto-client`
+at this point atmoq is a usable indigo replacement; (b) MoQ publisher: broadcast
+announce, four event tracks + combined track, group rotation; (c) `atmoq-client`
 consumer able to reconstruct the identical event stream from MoQ (gap detection +
 per-account PDS re-sync per decision 0001); (d) `diag` mode: the same publisher/
 consumer pair pointed at third-party public relays (Cloudflare first, then moq.dev),
@@ -195,11 +196,11 @@ live network (subscribe to a handful of real PDSes; later, a full-network crawl)
 **M6 — Phase 2 protocol surface.** Repo-sync tracks (redesigned per spec notes §4 —
 this is the genuinely novel/exciting part: verifiable per-record sync with MST proof
 paths over FETCH), blob tracks (redesigned per spec notes §5), MoQ relay-to-relay
-fan-out (a downstream lastproto subscribing to an upstream one over MOQT instead of WS).
+fan-out (a downstream atmoq subscribing to an upstream one over MOQT instead of WS).
 
-**M7 — TypeScript client.** Port `lastproto-sync`/`lastproto-atom` logic against the
+**M7 — TypeScript client.** Port `atmoq-sync`/`atmoq-atom` logic against the
 shared test vectors; browser + server transport adapters; consumer API mirroring
-`lastproto-client`.
+`atmoq-client`.
 
 ## 5. End-to-end testing strategy
 
@@ -218,8 +219,8 @@ The core test is differential:
 
 ```
 dev-env (PLC + PDS) ──┬──▶ indigo relay ──WS──▶ capture A
-                      └──▶ lastproto    ──WS──▶ capture B   (legacy output)
-                                        ──MOQT─▶ lastproto-client ──▶ capture C
+                      └──▶ atmoq    ──WS──▶ capture B   (legacy output)
+                                        ──MOQT─▶ atmoq-client ──▶ capture C
 write script ──XRPC──▶ PDS
 assert: A ≡ B ≡ C  (event-by-event: type, did, rev, ops, blocks; seq monotonic per-stream)
 ```
@@ -235,7 +236,7 @@ Plus:
 - **Identity tests**: handle change, signing-key rotation mid-stream (the §4.5
   refresh-and-retry path), account deactivate/takedown gating subsequent commits.
 - **Interop vectors** at the data layer (M1) shared with the future TS impl.
-- **Public-relay compatibility suites** (decision 0001 update): a `lastproto diag`
+- **Public-relay compatibility suites** (decision 0001 update): a `atmoq diag`
   mode that publishes synthetic, self-verifying tracks (sequenced CBOR frames)
   through a *third-party public MoQ relay*, subscribes from another process/network,
   and verifies delivery, ordering, late-join, and cache behavior. Run the same suite
@@ -267,7 +268,7 @@ Flagged for discussion before/while M0 — roughly ordered by how much they bloc
 
 ## 7. Risks
 
-- **moq-lite churn**: kixelated iterates fast and the spec follows the code. Mitigation: isolate the transport behind `lastproto-atom` traits; pin crate/package versions per release. (This replaced the IETF-draft-churn risk; same shape, one repo instead of one WG.)
+- **moq-lite churn**: kixelated iterates fast and the spec follows the code. Mitigation: isolate the transport behind `atmoq-atom` traits; pin crate/package versions per release. (This replaced the IETF-draft-churn risk; same shape, one repo instead of one WG.)
 - **ATOM is -00 and unowned by atproto's authors**: Bluesky's sync direction (the new at-sync draft) evolved the same week ATOM was published. We are the integration point; expect to write the reconciliation ourselves (that's the fun part).
 - **Validation correctness**: op-inversion subtleties (adjacent-node requirements, §4.1.2) are easy to get wrong; differential testing against indigo is our main defense.
 - **Browser WebTransport reality**: still uneven across browsers/CDNs; the TS milestone should re-verify the landscape rather than trust today's assumptions.

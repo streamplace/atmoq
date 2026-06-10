@@ -7,7 +7,7 @@ against the authoritative atproto specs
 and MOQT draft-16/17. The broad design — firehose as MOQT tracks, groups as cache/replay
 units, FETCH for gap recovery, relay-tier caching — is sound and worth building. The
 items below are where the draft conflicts with atproto reality or with MOQT itself, and
-what lastproto intends to do instead. Each is a candidate issue for the
+what atmoq intends to do instead. Each is a candidate issue for the
 [draft's tracker](https://github.com/snandaku/draft-nandakumar-atproto-atom).
 
 ## 1. Cursor mapping assumes dense sequence numbers (§5.1)
@@ -20,7 +20,7 @@ must jump strictly upward). With gaps, division gives wrong positions, and "Obje
 missing from Group 6" (§5.2.1) becomes indistinguishable from a legitimate seq gap —
 the gap-detection mechanism would trigger spurious FETCHes network-wide.
 
-**lastproto**: objects are packed densely into groups (object IDs 0..N-1 are positional,
+**atmoq**: objects are packed densely into groups (object IDs 0..N-1 are positional,
 not seq-derived); the authoritative cursor is the `at-seq` extension header (which §5.1
 already mandates — good); cursor→(group,object) resolution uses a persisted index
 maintained by the publisher, not arithmetic. MOQT-level gap detection then works as
@@ -37,7 +37,7 @@ Three different shapes appear:
 Also note MOQT namespaces are *tuples* of binary fields, not slash-strings; the draft
 should specify the tuple encoding explicitly.
 
-**lastproto**: namespace tuple `("at", "firehose", host)`, track name
+**atmoq**: namespace tuple `("at", "firehose", host)`, track name
 `{event-type}/{all|did}` — pending what other implementations do. We'll pick one
 canonical form, document it, and file the inconsistency upstream.
 
@@ -51,7 +51,7 @@ cross-track ordering. A consumer that processes the high-priority identity/accou
 tracks "ahead of" commits will also sometimes process commits *before* the takedown that
 should have gated them — priority delivery reorders both ways under congestion.
 
-**lastproto**: all tracks share one sequence space; `at-seq` is mandatory everywhere; we
+**atmoq**: all tracks share one sequence space; `at-seq` is mandatory everywhere; we
 publish an additional combined-order `firehose` track as the canonical stream, with the
 per-type tracks as a subscription/priority optimization. Consumers of split tracks MUST
 merge on `at-seq` before applying state-dependent validation. (The priority table is
@@ -72,7 +72,7 @@ Also, mapping `Subgroup = Collection` is awkward: subgroup IDs are numeric and
 per-group; collections are strings whose set changes per commit; nothing specifies the
 numbering.
 
-**lastproto (phase 2)**: keep `Group = commit` (that part is good — unicity of the MST
+**atmoq (phase 2)**: keep `Group = commit` (that part is good — unicity of the MST
 means a commit is a natural immutable cache unit). For selectivity, use per-collection
 *tracks* (`at/repo/{host}/{did}` namespace, track per collection plus a `commits+mst`
 track) or FETCH-driven retrieval of specific records + MST proof paths, rather than
@@ -88,7 +88,7 @@ the obvious candidate).
 at relays that key on group ID), and `Object ID = 0` makes a multi-GB video a single
 MOQT object, defeating incremental delivery and relay caching granularity.
 
-**lastproto (phase 2)**: address blobs by full CID — either track-per-blob
+**atmoq (phase 2)**: address blobs by full CID — either track-per-blob
 (`at/blobs/{host}` namespace, track name = CID string) or FETCH with the CID in the
 track name — and chunk blob bytes across objects within a group (fixed chunk size,
 `at-block-cid` extension header on object 0 for verification). Streaming verification of
@@ -101,7 +101,7 @@ verification to the consumer after reassembly, as HTTP blob fetch does today.
 includes the at-sync header object (`{op, t}`) or just the message payload, whether
 deterministic CBOR is required, or how the 5 MB WS frame limit maps.
 
-**lastproto**: payload = the at-sync *payload object only*, deterministic CBOR, exactly
+**atmoq**: payload = the at-sync *payload object only*, deterministic CBOR, exactly
 the bytes a WS consumer would see after the header object; `t` is conveyed by
 `at-event-type`; `op=-1` error frames have no MOQT equivalent (errors are
 SUBSCRIBE_ERROR / session close). Size limits inherited from at-sync (§4.4.2: 5 MB
@@ -129,7 +129,7 @@ same trust model as the WS header).
   consumer re-syncs against `getRepo` (or repo-sync track) output and the *current
   commit*; #sync messages are one trigger among several (desync via prevData mismatch
   being the common one).
-- **§6/§7/§8 (Auth, Security, IANA) are TODO.** For lastproto: firehose data is
+- **§6/§7/§8 (Auth, Security, IANA) are TODO.** For atmoq: firehose data is
   manifestly public (at-arch §7), so MVP is unauthenticated reads, parity with WS
   firehose. The C4M common-access-token draft is referenced informatively and is the
   obvious shape for rate-limit tiers/trusted consumers later. The extension-header and
@@ -139,5 +139,5 @@ same trust model as the WS header).
   ATOM's relay-aggregation section (§4.6) doesn't address how a MOQT relay (which is
   content-agnostic) interacts with that — an *atproto* relay is not a *MOQT* relay: it
   re-originates a new sequence space and applies policy. Worth a paragraph upstream;
-  lastproto is an atproto relay that *uses* MOQT, and generic MOQT relays can sit
+  atmoq is an atproto relay that *uses* MOQT, and generic MOQT relays can sit
   between it and consumers as dumb caches.

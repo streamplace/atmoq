@@ -20,9 +20,9 @@ Ports (published by `test.sh`): 2582 PLC, 2583 PDS, 2470 relay
 API + firehose (`ws://localhost:2470/xrpc/com.atproto.sync.subscribeRepos`).
 Relay admin: basic auth `admin:admin`. PDS admin password: `admin-pass`.
 
-When lastproto exists, the same driver runs once while *both* relays are
-subscribed to the PDS, capture runs against indigo-WS / lastproto-WS /
-lastproto-MoQ, and the three normalized captures must agree (modulo seq
+When atmoq exists, the same driver runs once while *both* relays are
+subscribed to the PDS, capture runs against indigo-WS / atmoq-WS /
+atmoq-MoQ, and the three normalized captures must agree (modulo seq
 numbering, which is per-relay).
 
 The indigo commit is pinned via `INDIGO_COMMIT` in the Dockerfile

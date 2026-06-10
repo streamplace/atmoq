@@ -17,7 +17,7 @@ the actual product requirement (PLAN.md §3.4).
   draft-MOQT constructs; we adopt ATOM's *data-plane concepts* (track layout,
   group semantics, seq-carrying objects, priority tiers) translated onto
   moq-lite's model (broadcasts/tracks/groups/frames, announce-based discovery).
-  `lastproto-atom` remains the translation layer either way, which keeps a
+  `atmoq-atom` remains the translation layer either way, which keeps a
   future IETF-MOQT backend possible if the drafts and implementations converge.
 - **No FETCH, and that's fine.** True atproto backfill comes from syncing back
   to the PDS fleet (at-sync §3 + §4.6 full-repo fetch), not from selectively
@@ -31,7 +31,7 @@ the actual product requirement (PLAN.md §3.4).
 - Since moq-lite has no per-object extension headers, `at-seq` / event-type /
   did metadata live in the payload framing we define (the at-sync payload
   already carries `seq`; event type needs a place — small envelope or
-  per-type tracks; to be settled in the lastproto-atom design, guided by
+  per-type tracks; to be settled in the atmoq-atom design, guided by
   what's idiomatic in moq-lite/hang).
 - Cite/track moq-lite's spec (moq.dev) rather than draft-ietf-moq-transport in
   implementation docs; pin crate/package versions per release (kixelated
@@ -73,7 +73,7 @@ Consequences:
    deterministically derivable (e.g. from relay host + DID + event type) so
    discovery-free relays like Cloudflare's work. This aligns with ATOM's
    deterministic namespace scheme anyway.
-3. The transport abstraction in `lastproto-atom` must keep additional backends
+3. The transport abstraction in `atmoq-atom` must keep additional backends
    genuinely implementable — no single relay's types or discovery semantics
    may leak into the data-plane design. The diag suite is the acceptance test
    for each new backend/dialect.

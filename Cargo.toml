@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/lastproto-relay"]
+members = ["crates/atmoq"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/streamplace/lastproto"
+repository = "https://github.com/streamplace/atmoq"
 
 [workspace.dependencies]
 anyhow = "1"

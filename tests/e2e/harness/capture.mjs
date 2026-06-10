@@ -5,7 +5,7 @@
 //
 // Exits after `--idle-ms` (default 3000) with no new frames, or `--max-ms`.
 // This is the capture half of the differential test: today it reads indigo's
-// WS output; the same normalized form will be produced from lastproto's WS and
+// WS output; the same normalized form will be produced from atmoq's WS and
 // MoQ outputs later.
 import WebSocket from "ws";
 import { normalizeFrame } from "./frames.mjs";

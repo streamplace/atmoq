@@ -32,8 +32,8 @@ echo "[entrypoint] starting moq-relay"
 moq-relay /app/moq-relay.toml &
 wait_for http://localhost:4443/certificate.sha256 "moq-relay"
 
-echo "[entrypoint] starting lastproto relay (PDS -> MoQ passthrough)"
-lastproto relay --relay-host ws://localhost:2583 --moq-host http://localhost:4443 &
+echo "[entrypoint] starting atmoq relay (PDS -> MoQ passthrough)"
+atmoq relay --relay-host ws://localhost:2583 --moq-host http://localhost:4443 &
 
 echo "[entrypoint] requesting crawl of local PDS"
 curl -sf -u admin:admin -X POST \

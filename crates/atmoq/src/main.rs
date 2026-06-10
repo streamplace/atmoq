@@ -1,20 +1,20 @@
-//! lastproto: atproto firehose over MoQ transport.
+//! atmoq: atproto firehose over MoQ transport.
 //!
 //! CLI shape follows goat (github.com/bluesky-social/goat) where the
-//! commands overlap: `lastproto firehose` streams events like
+//! commands overlap: `atmoq firehose` streams events like
 //! `goat firehose`, accepting either a WebSocket relay (--relay-host) or a
-//! MoQ relay (--moq-host) as the source. `lastproto relay` is the bridge:
+//! MoQ relay (--moq-host) as the source. `atmoq relay` is the bridge:
 //! it consumes a WebSocket firehose and republishes it over MoQ.
 
 use base64::Engine;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use lastproto_relay::{frame::Frame, ingest, json::cbor_to_json};
+use atmoq::{frame::Frame, ingest, json::cbor_to_json};
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
 #[derive(Parser)]
-#[command(name = "lastproto", version, about)]
+#[command(name = "atmoq", version, about)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

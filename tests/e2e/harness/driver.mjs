@@ -33,7 +33,7 @@ const expectedOps = [];
 
 // two post creates
 const posts = [];
-for (const text of ["hello from lastproto e2e", "second post"]) {
+for (const text of ["hello from atmoq e2e", "second post"]) {
   const post = await xrpc(
     "com.atproto.repo.createRecord",
     {

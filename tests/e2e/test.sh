@@ -4,8 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-IMAGE=lastproto-e2e
-NAME=lastproto-e2e-run
+IMAGE=atmoq-e2e
+NAME=atmoq-e2e-run
 
 docker build -t "$IMAGE" -f Dockerfile ../..
 
@@ -36,23 +36,23 @@ docker exec "$NAME" test -f /tmp/ready
 
 echo "starting MoQ tail (live subscriber)..."
 docker exec -d "$NAME" bash -c \
-  'lastproto firehose --moq-host http://localhost:4443 --raw --idle-ms 8000 >/tmp/moq.jsonl 2>/tmp/moq-tail.log'
+  'atmoq firehose --moq-host http://localhost:4443 --raw --idle-ms 8000 >/tmp/moq.jsonl 2>/tmp/moq-tail.log'
 
 echo "driving writes..."
-docker exec "$NAME" node /app/harness/driver.mjs >/tmp/lastproto-driver.json
+docker exec "$NAME" node /app/harness/driver.mjs >/tmp/atmoq-driver.json
 # give the relays a moment to ingest everything
 sleep 2
 
 echo "capturing relay firehose..."
-docker exec "$NAME" node /app/harness/capture.mjs >/tmp/lastproto-capture.jsonl
+docker exec "$NAME" node /app/harness/capture.mjs >/tmp/atmoq-capture.jsonl
 
 echo "capturing PDS firehose directly (ground truth)..."
 docker exec "$NAME" bash -c \
-  'lastproto firehose --relay-host ws://localhost:2583 --cursor 0 --raw --idle-ms 3000 >/tmp/pds.jsonl 2>/dev/null'
+  'atmoq firehose --relay-host ws://localhost:2583 --cursor 0 --raw --idle-ms 3000 >/tmp/pds.jsonl 2>/dev/null'
 
 echo "verifying indigo capture against driver expectations..."
-docker cp /tmp/lastproto-driver.json "$NAME":/tmp/driver.json >/dev/null
-docker cp /tmp/lastproto-capture.jsonl "$NAME":/tmp/capture.jsonl >/dev/null
+docker cp /tmp/atmoq-driver.json "$NAME":/tmp/driver.json >/dev/null
+docker cp /tmp/atmoq-capture.jsonl "$NAME":/tmp/capture.jsonl >/dev/null
 docker exec "$NAME" node /app/harness/verify.mjs /tmp/driver.json /tmp/capture.jsonl
 
 echo "verifying MoQ passthrough is byte-identical to the PDS firehose..."

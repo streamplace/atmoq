@@ -1,6 +1,6 @@
 // Shared frame decoding/normalization for firehose captures.
 //
-// All capture paths (indigo WS, direct PDS WS, lastproto WS, lastproto MoQ)
+// All capture paths (indigo WS, direct PDS WS, atmoq WS, atmoq MoQ)
 // funnel through `normalizeFrame` so their outputs are directly diffable.
 import { cborDecodeMulti } from "@atproto/common";
 
