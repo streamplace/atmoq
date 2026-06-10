@@ -158,10 +158,11 @@ Parity with indigo where it's ecosystem-facing:
 
 **M0 — Spikes & decisions (timeboxed).** Transport stack is decided
 ([moq-lite, decision 0001](docs/decisions/0001-transport-stack.md)); remaining spikes:
-(a) moq-lite toy — publish a stream of CBOR frames through a moq relay, subscribe from
-native + browser, confirm where per-event metadata should live; (b) evaluate atproto
-crates (§6 Q5) by running their MST/CAR code against the interop test vectors. Outcomes
-recorded in `docs/decisions/`.
+(a) moq toy / proto-diag — publish a stream of sequenced CBOR frames using kixelated's
+libraries through **Cloudflare's public relay** (and moq.dev's, to compare), subscribe
+from native + browser, confirm where per-event metadata should live and what each
+relay's dialect tolerates; (b) evaluate atproto crates (§6 Q5) by running their
+MST/CAR code against the interop test vectors. Outcomes recorded in `docs/decisions/`.
 
 **M1 — atproto data layer.** `lastproto-repo` (build or wrap): deterministic CBOR
 encode/verify, CID, TID, CAR streaming reader/writer, MST construction + **operation
@@ -181,8 +182,9 @@ at this point lastproto is a usable indigo replacement; (b) MoQ publisher: broad
 announce, four event tracks + combined track, group rotation; (c) `lastproto-client`
 consumer able to reconstruct the identical event stream from MoQ (gap detection +
 per-account PDS re-sync per decision 0001); (d) `diag` mode: the same publisher/
-consumer pair pointed at a third-party public relay (moq.dev to start), verifying
-end-to-end behavior over infrastructure we don't operate.
+consumer pair pointed at third-party public relays (Cloudflare first, then moq.dev),
+verifying end-to-end behavior over infrastructure we don't operate and mapping
+per-relay dialect differences.
 
 **M4 — E2E + differential testing.** See §5. CI-gated.
 
@@ -233,14 +235,17 @@ Plus:
 - **Identity tests**: handle change, signing-key rotation mid-stream (the §4.5
   refresh-and-retry path), account deactivate/takedown gating subsequent commits.
 - **Interop vectors** at the data layer (M1) shared with the future TS impl.
-- **Public-relay diagnostics** (decision 0001 update): a `lastproto diag` mode that
-  publishes synthetic, self-verifying tracks (sequenced CBOR frames) through a
-  *third-party public MoQ relay* — kixelated's moq.dev relay for moq-lite, the
-  Cloudflare/Cisco fleets once an IETF backend exists — subscribes from another
-  process/network, and verifies delivery, ordering, late-join, and cache behavior.
-  This is how we prove the techniques work over infrastructure we don't operate,
-  which is a strategic goal of the project (free unmetered global fan-out while the
-  giants are subsidizing MoQ adoption).
+- **Public-relay compatibility suites** (decision 0001 update): a `lastproto diag`
+  mode that publishes synthetic, self-verifying tracks (sequenced CBOR frames)
+  through a *third-party public MoQ relay*, subscribes from another process/network,
+  and verifies delivery, ordering, late-join, and cache behavior. Run the same suite
+  against each public relay to empirically map dialect differences (protocol subset,
+  ANNOUNCE support, auth/abuse model, size limits, retention). **Cloudflare's relay
+  (`relay.cloudflare.mediaoverquic.com`, draft-07 subset, kixelated's libs interop
+  with it) is the first target**; moq.dev's relay second. This is how we prove the
+  techniques work over infrastructure we don't operate — free unmetered global
+  fan-out while the giants are subsidizing MoQ adoption is a strategic goal of the
+  project.
 
 ## 6. Open architectural questions
 

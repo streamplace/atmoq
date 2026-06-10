@@ -37,25 +37,43 @@ the actual product requirement (PLAN.md §3.4).
   implementation docs; pin crate/package versions per release (kixelated
   iterates fast — the spec-churn risk moves from the IETF WG to one repo).
 
-## Update 2026-06-10: public relay fleets
+## Update 2026-06-10: public relay fleets — Cloudflare first
 
 Part of the motivation for this project: Cloudflare, Cisco, and other large
 operators want MoQ to succeed and are currently running **public, unmetered MoQ
 relays**. Riding that infrastructure (free global fan-out for atproto firehose
-distribution) is a strategic goal, and it cuts across this decision:
+distribution) is a strategic goal. Eli: target **Cloudflare's relay first**.
 
-- kixelated operates a public **moq-lite** relay (moq.dev) — usable with our
-  primary stack immediately.
-- The Cloudflare / Cisco fleets speak **IETF MOQT drafts**, not moq-lite.
+What we know about the landscape (see kixelated's
+[First MoQ CDN post](https://moq.dev/blog/first-cdn/) and
+[Cloudflare's MoQ docs](https://developers.cloudflare.com/moq/)):
 
-This doesn't change the primary choice, but it upgrades two soft requirements
-to hard ones:
+- Cloudflare's public relay: `relay.cloudflare.mediaoverquic.com`, running on
+  their full anycast network (330+ cities), free technical preview. It speaks
+  a *small subset of IETF draft-07* — and per kixelated (directly to Eli, and
+  per his blog), his @moq client libraries interoperate with it. So
+  "moq-lite-first" and "Cloudflare-first" are compatible choices.
+- Known Cloudflare dialect gaps today: **no ANNOUNCE** (no discovery — track
+  names must be constructed deterministically out-of-band) and **no auth**
+  (anyone can publish under any broadcast name; squatting/poisoning is
+  possible — atproto's signed events make garbage *detectable*, but per-relay
+  abuse models need characterizing).
+- kixelated also runs his own public moq-lite relay (moq.dev infra), and other
+  fleets (Cisco etc.) exist with their own dialects.
 
-1. The transport abstraction in `lastproto-atom` must keep a second (IETF MOQT)
-   backend genuinely implementable — no moq-lite types or discovery semantics
-   may leak into the data-plane design.
-2. We need **end-to-end diagnostics that run over third-party public relays we
-   don't operate** (see PLAN.md §5): publish synthetic firehose tracks through
-   a public relay, subscribe from elsewhere, and verify delivery, ordering,
-   group/caching behavior, and late-join semantics. These diagnostics double as
-   the acceptance test for any second transport backend.
+Consequences:
+
+1. **Per-relay compatibility suites** (PLAN.md §5): the same self-verifying
+   diagnostic suite run against each public relay — Cloudflare first, moq.dev
+   second, others as discovered — to empirically characterize how differently
+   each one needs to be spoken: protocol version/subset, discovery (ANNOUNCE
+   or not), auth/abuse model, object size limits, group retention/caching,
+   ordering, late-join. Expect to maintain more than one dialect over time.
+2. **Never depend on ANNOUNCE for correctness.** Track/broadcast names must be
+   deterministically derivable (e.g. from relay host + DID + event type) so
+   discovery-free relays like Cloudflare's work. This aligns with ATOM's
+   deterministic namespace scheme anyway.
+3. The transport abstraction in `lastproto-atom` must keep additional backends
+   genuinely implementable — no single relay's types or discovery semantics
+   may leak into the data-plane design. The diag suite is the acceptance test
+   for each new backend/dialect.
