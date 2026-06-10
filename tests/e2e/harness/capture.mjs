@@ -8,7 +8,7 @@
 // WS output; the same normalized form will be produced from lastproto's WS and
 // MoQ outputs later.
 import WebSocket from "ws";
-import { cborDecodeMulti } from "@atproto/common";
+import { normalizeFrame } from "./frames.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => a.replace(/^--/, "").split("=")),
@@ -18,18 +18,6 @@ const url =
   "ws://localhost:2470/xrpc/com.atproto.sync.subscribeRepos?cursor=0";
 const idleMs = Number(args["idle-ms"] ?? 3000);
 const maxMs = Number(args["max-ms"] ?? 30000);
-
-const normalize = (v) => {
-  if (v instanceof Uint8Array) return { $bytesLength: v.byteLength };
-  if (v && typeof v === "object") {
-    if (v.asCID === v) return v.toString(); // multiformats CID
-    if (Array.isArray(v)) return v.map(normalize);
-    return Object.fromEntries(
-      Object.entries(v).map(([k, val]) => [k, normalize(val)]),
-    );
-  }
-  return v;
-};
 
 const ws = new WebSocket(url);
 let idleTimer;
@@ -45,6 +33,5 @@ ws.on("error", (err) => {
 });
 ws.on("message", (data) => {
   bump();
-  const [header, payload] = cborDecodeMulti(new Uint8Array(data));
-  console.log(JSON.stringify({ header: normalize(header), payload: normalize(payload) }));
+  console.log(JSON.stringify(normalizeFrame(new Uint8Array(data))));
 });
