@@ -12,6 +12,10 @@ moq-net 0.1.10 / moq-native 0.17.0.
   byte-exact, ordered, with group rotation (observed join at group 23 of a
   running stream — late-join lands on the latest group boundary as expected).
 - Negotiates moq-lite natively. No flags needed beyond defaults.
+- **Byte-exactness proven on the public path**: parallel captures of
+  wss://bsky.network directly (ws-tail) and through cdn.moq.dev
+  (relay → moq-tail) diffed with diff-frames.mjs: 62 overlapping live
+  mainnet frames byte-identical.
 
 ## Cloudflare — relay.cloudflare.mediaoverquic.com ❌ (today, from here)
 
