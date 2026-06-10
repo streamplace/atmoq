@@ -1,7 +1,18 @@
-# E2E harness: local atproto network (PLC + PDS) + indigo relay (the oracle),
-# all in one container on localhost so DID-document URLs resolve everywhere.
+# E2E harness: local atproto network (PLC + PDS) + indigo relay (the oracle)
+# + lastproto binaries, all in one container on localhost so DID-document URLs
+# resolve everywhere.
+#
+# Build context is the REPO ROOT (see test.sh / justfile):
+#   docker build -f tests/e2e/Dockerfile .
 #
 # Ports: 2582 PLC, 2583 PDS, 2470 relay API/firehose, 2471 relay metrics.
+
+FROM rust:1.95-bookworm AS rustbuild
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release --bins \
+    && mkdir -p /out && cp target/release/ws-tail /out/
 
 FROM golang:1.26-trixie AS gobuild
 # Pinned to the commit checked out in ~/code/indigo during planning.
@@ -19,14 +30,15 @@ RUN sed -i '/util\/ssrf/d; /Transport:.*PublicOnlyTransport/d' cmd/relay/relay/h
 
 FROM node:22-bookworm
 COPY --from=gobuild /out/relay /usr/local/bin/relay
+COPY --from=rustbuild /out/* /usr/local/bin/
 
 WORKDIR /app
-COPY package.json tsconfig.json ./
-COPY dev-env ./dev-env
+COPY tests/e2e/package.json tests/e2e/tsconfig.json ./
+COPY tests/e2e/dev-env ./dev-env
 # `npm install` runs the prepare script (tsc -> dev-env/dist)
 RUN npm install
-COPY harness ./harness
-COPY entrypoint.sh /entrypoint.sh
+COPY tests/e2e/harness ./harness
+COPY tests/e2e/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data/relay/persist
 
 EXPOSE 2470 2471 2582 2583

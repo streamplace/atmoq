@@ -3,12 +3,19 @@
 default:
     @just --list
 
-# Build the e2e harness Docker image (PLC + PDS + indigo relay oracle)
+# Build the e2e harness Docker image (PLC + PDS + indigo relay oracle + lastproto)
 build:
-    docker build -t lastproto-e2e tests/e2e
+    docker build -t lastproto-e2e -f tests/e2e/Dockerfile .
 
-# Run the full test suite (currently: the e2e differential harness)
-test:
+# Run unit tests + the e2e differential harness
+test: test-unit test-e2e
+
+# Rust unit tests
+test-unit:
+    cargo test
+
+# e2e differential harness (Docker)
+test-e2e:
     tests/e2e/test.sh
 
 # Remove harness containers and image

@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 IMAGE=lastproto-e2e
 NAME=lastproto-e2e-run
 
-docker build -t "$IMAGE" .
+docker build -t "$IMAGE" -f Dockerfile ../..
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p 2470:2470 -p 2582:2582 -p 2583:2583 "$IMAGE" >/dev/null

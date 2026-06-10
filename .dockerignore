@@ -1,0 +1,6 @@
+.git
+target
+node_modules
+tests/e2e/dev-env/dist
+*.jsonl
+docs
