@@ -34,15 +34,28 @@ for _ in $(seq 1 240); do
 done
 docker exec "$NAME" test -f /tmp/ready
 
+echo "starting MoQ tail (live subscriber)..."
+docker exec -d "$NAME" bash -c \
+  'moq-tail http://localhost:4443 --idle-ms 8000 >/tmp/moq.jsonl 2>/tmp/moq-tail.log'
+
 echo "driving writes..."
 docker exec "$NAME" node /app/harness/driver.mjs >/tmp/lastproto-driver.json
-# give the relay a moment to ingest everything
+# give the relays a moment to ingest everything
 sleep 2
 
 echo "capturing relay firehose..."
 docker exec "$NAME" node /app/harness/capture.mjs >/tmp/lastproto-capture.jsonl
 
-echo "verifying..."
+echo "capturing PDS firehose directly (ground truth)..."
+docker exec "$NAME" bash -c \
+  'ws-tail ws://localhost:2583 --cursor 0 --idle-ms 3000 >/tmp/pds.jsonl 2>/dev/null'
+
+echo "verifying indigo capture against driver expectations..."
 docker cp /tmp/lastproto-driver.json "$NAME":/tmp/driver.json >/dev/null
 docker cp /tmp/lastproto-capture.jsonl "$NAME":/tmp/capture.jsonl >/dev/null
 docker exec "$NAME" node /app/harness/verify.mjs /tmp/driver.json /tmp/capture.jsonl
+
+echo "verifying MoQ passthrough is byte-identical to the PDS firehose..."
+# the detached moq-tail exits after 8s idle; make sure it's flushed
+sleep 7
+docker exec "$NAME" node /app/harness/diff-frames.mjs /tmp/pds.jsonl /tmp/moq.jsonl --min-overlap=8

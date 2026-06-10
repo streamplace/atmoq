@@ -19,6 +19,9 @@ struct Args {
     /// Exit after this many frames (0 = run forever)
     #[arg(long, default_value_t = 0)]
     limit: usize,
+    /// Exit after this many milliseconds without a frame (0 = never)
+    #[arg(long, default_value_t = 0)]
+    idle_ms: u64,
     /// Omit raw bytes from output
     #[arg(long)]
     no_raw: bool,
@@ -45,7 +48,21 @@ async fn main() -> anyhow::Result<()> {
 
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut count = 0usize;
-    while let Some(frame) = rx.recv().await {
+    loop {
+        let frame = if args.idle_ms > 0 {
+            match tokio::time::timeout(std::time::Duration::from_millis(args.idle_ms), rx.recv())
+                .await
+            {
+                Ok(f) => f,
+                Err(_) => {
+                    tracing::info!(count, "idle timeout reached");
+                    return Ok(());
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(frame) = frame else { break };
         let mut line = serde_json::json!({ "t": frame.t, "seq": frame.seq });
         if !args.no_raw {
             line["raw"] = serde_json::Value::String(b64.encode(&frame.raw));

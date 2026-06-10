@@ -1,0 +1,12 @@
+# Local moq-relay for the e2e harness. Dev only: self-signed cert, anonymous
+# access. Clients connect with http://localhost:4443 (fingerprint auto-fetch).
+
+[server]
+listen = "[::]:4443"
+tls.generate = ["localhost"]
+
+[web.http]
+listen = "[::]:4443"
+
+[auth]
+public = ""

@@ -8,11 +8,15 @@
 # Ports: 2582 PLC, 2583 PDS, 2470 relay API/firehose, 2471 relay metrics.
 
 FROM rust:1.95-bookworm AS rustbuild
+# moq-relay first: heavy, rarely changes, caches independently of our code
+RUN cargo install moq-relay --version 0.12.9 --locked --root /moq
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --bins \
-    && mkdir -p /out && cp target/release/ws-tail /out/
+    && mkdir -p /out \
+    && cp target/release/ws-tail target/release/moq-tail target/release/relay /out/ \
+    && mv /out/relay /out/lastproto-relay
 
 FROM golang:1.26-trixie AS gobuild
 # Pinned to the commit checked out in ~/code/indigo during planning.
@@ -30,7 +34,7 @@ RUN sed -i '/util\/ssrf/d; /Transport:.*PublicOnlyTransport/d' cmd/relay/relay/h
 
 FROM node:22-bookworm
 COPY --from=gobuild /out/relay /usr/local/bin/relay
-COPY --from=rustbuild /out/* /usr/local/bin/
+COPY --from=rustbuild /out/* /moq/bin/moq-relay /usr/local/bin/
 
 WORKDIR /app
 COPY tests/e2e/package.json tests/e2e/tsconfig.json ./
@@ -38,6 +42,7 @@ COPY tests/e2e/dev-env ./dev-env
 # `npm install` runs the prepare script (tsc -> dev-env/dist)
 RUN npm install
 COPY tests/e2e/harness ./harness
+COPY tests/e2e/moq-relay.toml ./moq-relay.toml
 COPY tests/e2e/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data/relay/persist
 

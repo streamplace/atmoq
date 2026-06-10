@@ -7,6 +7,7 @@
 use base64::Engine;
 use clap::Parser;
 use lastproto_relay::frame::Frame;
+use tokio::sync::mpsc;
 
 #[derive(Parser)]
 struct Args {
@@ -21,6 +22,9 @@ struct Args {
     /// Exit after this many frames (0 = run until the track ends)
     #[arg(long, default_value_t = 0)]
     limit: usize,
+    /// Exit after this many milliseconds without a frame (0 = never)
+    #[arg(long, default_value_t = 0)]
+    idle_ms: u64,
     /// Omit raw bytes from output
     #[arg(long)]
     no_raw: bool,
@@ -45,7 +49,10 @@ async fn main() -> anyhow::Result<()> {
     let client = args.client.init()?;
     let origin = moq_net::Origin::random().produce();
     let consumer = origin.consume();
-    let _session = client.with_consume(origin).connect(args.moq_url.clone()).await?;
+    let _session = client
+        .with_consume(origin)
+        .connect(args.moq_url.clone())
+        .await?;
     tracing::info!(url = %args.moq_url, broadcast = %args.broadcast, "waiting for broadcast");
 
     let broadcast = consumer
@@ -58,34 +65,54 @@ async fn main() -> anyhow::Result<()> {
     })?;
     tracing::info!("subscribed");
 
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let mut count = 0usize;
-    while let Some(mut group) = track.next_group().await? {
-        while let Some(data) = group.read_frame().await? {
-            let raw = data.to_vec();
-            let parsed = Frame::parse(raw.clone());
-            let (t, seq) = match &parsed {
-                Ok(f) => (f.t.clone(), f.seq),
-                Err(err) => {
-                    tracing::warn!(?err, "frame failed to parse");
-                    (None, None)
+    let (tx, mut rx) = mpsc::channel::<(u64, Vec<u8>)>(256);
+    let reader = tokio::spawn(async move {
+        while let Some(mut group) = track.next_group().await? {
+            let sequence = group.sequence;
+            while let Some(data) = group.read_frame().await? {
+                if tx.send((sequence, data.to_vec())).await.is_err() {
+                    return Ok(());
                 }
-            };
-            let mut line = serde_json::json!({
-                "t": t,
-                "seq": seq,
-                "group": group.sequence,
-            });
-            if !args.no_raw {
-                line["raw"] = serde_json::Value::String(b64.encode(&raw));
-            }
-            println!("{line}");
-            count += 1;
-            if args.limit > 0 && count >= args.limit {
-                return Ok(());
             }
         }
+        anyhow::Ok(())
+    });
+
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut count = 0usize;
+    loop {
+        let item = if args.idle_ms > 0 {
+            match tokio::time::timeout(std::time::Duration::from_millis(args.idle_ms), rx.recv())
+                .await
+            {
+                Ok(i) => i,
+                Err(_) => {
+                    tracing::info!(count, "idle timeout reached");
+                    return Ok(());
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some((group, raw)) = item else { break };
+        let (t, seq) = match Frame::parse(raw.clone()) {
+            Ok(f) => (f.t, f.seq),
+            Err(err) => {
+                tracing::warn!(?err, "frame failed to parse");
+                (None, None)
+            }
+        };
+        let mut line = serde_json::json!({ "t": t, "seq": seq, "group": group });
+        if !args.no_raw {
+            line["raw"] = serde_json::Value::String(b64.encode(&raw));
+        }
+        println!("{line}");
+        count += 1;
+        if args.limit > 0 && count >= args.limit {
+            return Ok(());
+        }
     }
+    reader.await??;
     tracing::info!(count, "track ended");
     Ok(())
 }

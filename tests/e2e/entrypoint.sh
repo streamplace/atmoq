@@ -28,6 +28,13 @@ RELAY_API_BIND=:2470 \
 relay serve &
 wait_for http://localhost:2470/xrpc/_health "relay"
 
+echo "[entrypoint] starting moq-relay"
+moq-relay /app/moq-relay.toml &
+wait_for http://localhost:4443/certificate.sha256 "moq-relay"
+
+echo "[entrypoint] starting lastproto relay (PDS -> MoQ passthrough)"
+lastproto-relay ws://localhost:2583 http://localhost:4443 &
+
 echo "[entrypoint] requesting crawl of local PDS"
 curl -sf -u admin:admin -X POST \
   -H 'Content-Type: application/json' \
