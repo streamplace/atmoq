@@ -180,7 +180,9 @@ suite ported from `indigo/cmd/relay/testing/`.
 at this point lastproto is a usable indigo replacement; (b) MoQ publisher: broadcast
 announce, four event tracks + combined track, group rotation; (c) `lastproto-client`
 consumer able to reconstruct the identical event stream from MoQ (gap detection +
-per-account PDS re-sync per decision 0001).
+per-account PDS re-sync per decision 0001); (d) `diag` mode: the same publisher/
+consumer pair pointed at a third-party public relay (moq.dev to start), verifying
+end-to-end behavior over infrastructure we don't operate.
 
 **M4 — E2E + differential testing.** See §5. CI-gated.
 
@@ -231,6 +233,14 @@ Plus:
 - **Identity tests**: handle change, signing-key rotation mid-stream (the §4.5
   refresh-and-retry path), account deactivate/takedown gating subsequent commits.
 - **Interop vectors** at the data layer (M1) shared with the future TS impl.
+- **Public-relay diagnostics** (decision 0001 update): a `lastproto diag` mode that
+  publishes synthetic, self-verifying tracks (sequenced CBOR frames) through a
+  *third-party public MoQ relay* — kixelated's moq.dev relay for moq-lite, the
+  Cloudflare/Cisco fleets once an IETF backend exists — subscribes from another
+  process/network, and verifies delivery, ordering, late-join, and cache behavior.
+  This is how we prove the techniques work over infrastructure we don't operate,
+  which is a strategic goal of the project (free unmetered global fan-out while the
+  giants are subsidizing MoQ adoption).
 
 ## 6. Open architectural questions
 

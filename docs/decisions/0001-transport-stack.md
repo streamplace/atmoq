@@ -36,3 +36,26 @@ the actual product requirement (PLAN.md §3.4).
 - Cite/track moq-lite's spec (moq.dev) rather than draft-ietf-moq-transport in
   implementation docs; pin crate/package versions per release (kixelated
   iterates fast — the spec-churn risk moves from the IETF WG to one repo).
+
+## Update 2026-06-10: public relay fleets
+
+Part of the motivation for this project: Cloudflare, Cisco, and other large
+operators want MoQ to succeed and are currently running **public, unmetered MoQ
+relays**. Riding that infrastructure (free global fan-out for atproto firehose
+distribution) is a strategic goal, and it cuts across this decision:
+
+- kixelated operates a public **moq-lite** relay (moq.dev) — usable with our
+  primary stack immediately.
+- The Cloudflare / Cisco fleets speak **IETF MOQT drafts**, not moq-lite.
+
+This doesn't change the primary choice, but it upgrades two soft requirements
+to hard ones:
+
+1. The transport abstraction in `lastproto-atom` must keep a second (IETF MOQT)
+   backend genuinely implementable — no moq-lite types or discovery semantics
+   may leak into the data-plane design.
+2. We need **end-to-end diagnostics that run over third-party public relays we
+   don't operate** (see PLAN.md §5): publish synthetic firehose tracks through
+   a public relay, subscribe from elsewhere, and verify delivery, ordering,
+   group/caching behavior, and late-join semantics. These diagnostics double as
+   the acceptance test for any second transport backend.
