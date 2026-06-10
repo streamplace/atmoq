@@ -1,0 +1,26 @@
+{
+  "private": true,
+  "type": "module",
+  "name": "@lastproto/e2e",
+  "version": "0.0.1",
+  "description": "End-to-end test harness: local PLC + PDS + indigo relay (oracle) + capture tooling",
+  "dependencies": {
+    "@atproto/common": "^0.4.0",
+    "@atproto/crypto": "^0.4.5",
+    "@atproto/identity": "^0.4.12",
+    "@atproto/pds": "^0.4.214",
+    "@did-plc/server": "^0.0.1",
+    "axios": "^1.7.9",
+    "better-sqlite3": "10.1.0",
+    "get-port": "^7.1.0",
+    "typescript": "^5.8.2",
+    "uint8arrays": "^5.1.0",
+    "ws": "^8.18.0"
+  },
+  "overrides": {
+    "@atproto/identity": "$@atproto/identity"
+  },
+  "scripts": {
+    "prepare": "tsc"
+  }
+}
