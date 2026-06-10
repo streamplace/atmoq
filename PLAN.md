@@ -16,7 +16,7 @@ where we intend to deviate.
 | [draft-holmgren-at-repository-02](https://www.ietf.org/archive/id/draft-holmgren-at-repository-02.txt) (2026-06-04) | Authoritative: repo format v3, MST, deterministic CBOR, CAR serialization, TIDs, signatures. |
 | [draft-holmgren-at-synchronization-00](https://www.ietf.org/archive/id/draft-holmgren-at-synchronization-00.txt) (2026-06-04) | Authoritative: the firehose. Message types (`#commit`/`#sync`/`#account`/`#identity`), frame format, cursor semantics, **commit validation (§4.5)** and operation inversion (§4.1.2), re-synchronization. This is the spec for "what a relay does"; ATOM only changes "how the bytes move". Split out of the repository draft days ago — ATOM-00 predates it and cites the older combined doc. |
 | [draft-newbold-at-architecture-00](https://www.ietf.org/archive/id/draft-newbold-at-architecture-00.txt) | Informational: network roles, DIDs/handles, relay responsibilities. |
-| [draft-ietf-moq-transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) | MOQT itself. ATOM is written against -16 semantics (PUBLISH_NAMESPACE / SUBSCRIBE_NAMESPACE / FETCH / subgroups / extension headers); the draft is at -17 as of March 2026. |
+| [draft-ietf-moq-transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) | MOQT itself. ATOM is written against -16 semantics (PUBLISH_NAMESPACE / SUBSCRIBE_NAMESPACE / FETCH / subgroups / extension headers); the draft is at -17 as of March 2026. **Decided 2026-06-10: we build on [moq-lite](https://moq.dev/) instead, translating ATOM's concepts — see [decision 0001](docs/decisions/0001-transport-stack.md).** |
 
 Reference implementation we're replacing: **indigo's relay** (`~/code/indigo/cmd/relay`,
 ~8k LOC Go). Its pipeline is the behavioral spec for everything transport-independent:
@@ -44,12 +44,12 @@ bridge:
  PDS B ──WS firehose──▶   │   → validate (at-sync §4.5: sig, rev, prevData, op inversion)   │
  PDS C ──WS firehose──▶   │   → sequence (monotonic seq, group-aligned disk log)            │
                           │   → publish:                                                    │
-                          │       • MOQT firehose tracks (ATOM §4.2.1) + FETCH from log     │
+                          │       • MoQ firehose tracks (ATOM §4.2.1 concepts on moq-lite)  │
                           │       • legacy WS subscribeRepos (compat, drop-in for indigo)   │
                           │       • XRPC ops endpoints (listHosts, requestCrawl, ...)       │
                           └─────────────────────────────────────────────────────────────────┘
                                           │                          │
-                               MOQT subscribers              existing AppViews etc.
+                                MoQ subscribers              existing AppViews etc.
                           (incl. downstream MoQ relays)        (unchanged, WS)
 ```
 
@@ -109,12 +109,14 @@ lastproto/
   and keeps validation code shared between both outputs.
 - **Groups**: fixed event-count groups (start with 1000/group, configurable). Because
   at-sync §4.3 explicitly permits seq gaps, ATOM's arithmetic cursor mapping is
-  unsound; we maintain a persisted seq→(group,object) index instead (this is indigo's
-  `LogFileRef` table generalized). Group boundaries align with disk-log segment files so
-  a FETCH of a group is a near-sendfile.
-- **Cursor resumption**: subscriber sends FETCH from its last seq (via index) then
-  SUBSCRIBE from the live edge, per ATOM §5.3.2. Cursor-too-old → behave like at-sync
-  §4.3 (start of window + info signal).
+  unsound; objects are packed densely and `at-seq` (carried in the payload) is
+  authoritative. Group boundaries align with disk-log segment files.
+- **Recovery (no FETCH — decision 0001)**: MoQ subscribers join at the live edge; a
+  consumer that detects it missed events (seq/rev discontinuity per account) re-syncs
+  affected accounts from the PDS fleet per at-sync §4.6 — the path every at-sync
+  consumer needs anyway. Full cursor replay remains available on the legacy WS output.
+  Whether the MoQ side also exposes a replay window (group history) is a tuning
+  question, not a correctness requirement.
 - **Repo sync tracks (ATOM §4.2.2) and blob tracks (§4.2.3)**: phase 2. The subgroup
   scheme as drafted doesn't work (MOQT has no subgroup filtering in SUBSCRIBE) and blob
   group-IDs truncate CIDs to 8 bytes; both need redesign. Details in spec notes §4–5.
@@ -154,11 +156,12 @@ Parity with indigo where it's ecosystem-facing:
 
 ## 4. Milestones
 
-**M0 — Spikes & decisions (timeboxed).** Evaluate MoQ stacks (§6 Q1) by building the
-same toy: publish a stream of CBOR objects with extension headers across a relay, FETCH
-a historical range, subscribe from a browser. Evaluate atproto crates (§6 Q5) by running
-their MST/CAR code against the interop test vectors. Outcome: locked choices, recorded
-in `docs/decisions/`.
+**M0 — Spikes & decisions (timeboxed).** Transport stack is decided
+([moq-lite, decision 0001](docs/decisions/0001-transport-stack.md)); remaining spikes:
+(a) moq-lite toy — publish a stream of CBOR frames through a moq relay, subscribe from
+native + browser, confirm where per-event metadata should live; (b) evaluate atproto
+crates (§6 Q5) by running their MST/CAR code against the interop test vectors. Outcomes
+recorded in `docs/decisions/`.
 
 **M1 — atproto data layer.** `lastproto-repo` (build or wrap): deterministic CBOR
 encode/verify, CID, TID, CAR streaming reader/writer, MST construction + **operation
@@ -174,10 +177,10 @@ real PDS (or dev-env PDS) and validate everything indigo validates, with a scena
 suite ported from `indigo/cmd/relay/testing/`.
 
 **M3 — Outputs.** (a) Legacy WS `subscribeRepos` including cursor backfill semantics —
-at this point lastproto is a usable indigo replacement; (b) MOQT publisher: namespace
-announce, four event tracks + combined track, groups, extension headers, FETCH serving
-from the log; (c) `lastproto-client` consumer able to reconstruct the identical event
-stream from MOQT (gap detection + FETCH recovery).
+at this point lastproto is a usable indigo replacement; (b) MoQ publisher: broadcast
+announce, four event tracks + combined track, group rotation; (c) `lastproto-client`
+consumer able to reconstruct the identical event stream from MoQ (gap detection +
+per-account PDS re-sync per decision 0001).
 
 **M4 — E2E + differential testing.** See §5. CI-gated.
 
@@ -233,13 +236,13 @@ Plus:
 
 Flagged for discussion before/while M0 — roughly ordered by how much they block.
 
-1. **Which MoQ stack?** The load-bearing choice. Candidates:
-   - [moqtail](https://github.com/moqtail/moqtail) — draft-16-compliant, **Rust + TypeScript** libraries plus a relay; best paper-fit for ATOM (FETCH, namespaces) and the dual-language requirement. Maturity unproven (need the M0 spike).
-   - [cloudflare/moq-rs](https://github.com/cloudflare/moq-rs) — Cloudflare-maintained Rust, draft-14; no TS sibling; would need updating to -16/-17 semantics.
-   - [moq-dev/moq](https://github.com/moq-dev/moq) (kixelated) — most active ecosystem, first-class Rust + TS + browser, real deployments… but moq-lite **intentionally diverges from the IETF draft** (no FETCH, different namespace model), so ATOM's group/FETCH recovery and namespace discovery would need reinvention on top. Given your Streamplace/video world you likely have opinions (and maybe relationships) here.
-   - Write our own MOQT layer over `quinn`/`web-transport` — full control, draft-17, large cost.
-   My lean: spike moqtail first, moq-lite second, and decide based on code quality and how much of ATOM survives contact with each. Also worth asking Suhas/Cullen what they're testing against (Cisco has libquicr/laps in C++) — interop with the spec authors would be valuable.
-2. **Spec fidelity vs. fixing it.** ATOM-00 has real defects (arithmetic cursors vs. seq gaps, subgroup filtering that doesn't exist in MOQT, namespace-format inconsistencies — see spec notes). Do we implement ATOM-as-written where possible and file issues, or implement our corrected profile ("ATOM-01-proposed") and feed it back? I lean the latter — the draft is `-00` and explicitly soliciting implementation experience; matching its bugs buys us interop with nobody (no other implementation exists yet, as far as I can tell — worth confirming with the authors).
+1. ~~**Which MoQ stack?**~~ **Decided 2026-06-10**: kixelated's
+   [moq-dev/moq](https://github.com/moq-dev/moq) (moq-lite), staying close to his spec;
+   no FETCH, and backfill comes from the PDS fleet rather than selective block sync.
+   See [decision 0001](docs/decisions/0001-transport-stack.md).
+2. ~~**Spec fidelity vs. fixing it.**~~ **Decided 2026-06-10**: implement the corrected
+   profile and feed issues back to the ATOM authors rather than matching the draft's
+   bugs.
 3. **Total order vs. per-type tracks.** Plan currently says: combined track is canonical, per-type tracks are an optimization sharing the same seq space. Alternative: per-type only (pure ATOM) and push merge complexity to every consumer. Any reason to prefer the latter?
 4. **How much indigo parity is in scope?** Sibling-relay admin forwarding, domain bans, trusted-host quota tiers — full parity, or just enough to run honestly (my assumption: takedowns/bans/limits yes, sibling forwarding later)?
 5. **Build vs. reuse the atproto data layer.** Candidates: [rsky](https://github.com/blacksky-algorithms/rsky) (Blacksky's Rust atproto; includes `rsky-relay`, repo/MST/crypto crates — also worth studying as the "other Rust relay", though it's WS-based), atrium ecosystem crates, [atproto-repo](https://crates.io/crates/atproto-repo). Operation inversion against the *new* June 2026 sync draft may not exist anywhere yet — evaluate in M0, expect to own at least that piece.
@@ -249,7 +252,7 @@ Flagged for discussion before/while M0 — roughly ordered by how much they bloc
 
 ## 7. Risks
 
-- **MOQT draft churn**: -16 → -17 already renamed/reshaped things; WG is active. Mitigation: isolate MOQT behind `lastproto-atom` traits; pin one draft version per release.
+- **moq-lite churn**: kixelated iterates fast and the spec follows the code. Mitigation: isolate the transport behind `lastproto-atom` traits; pin crate/package versions per release. (This replaced the IETF-draft-churn risk; same shape, one repo instead of one WG.)
 - **ATOM is -00 and unowned by atproto's authors**: Bluesky's sync direction (the new at-sync draft) evolved the same week ATOM was published. We are the integration point; expect to write the reconciliation ourselves (that's the fun part).
 - **Validation correctness**: op-inversion subtleties (adjacent-node requirements, §4.1.2) are easy to get wrong; differential testing against indigo is our main defense.
 - **Browser WebTransport reality**: still uneven across browsers/CDNs; the TS milestone should re-verify the landscape rather than trust today's assumptions.
