@@ -58,45 +58,75 @@ async fn main() -> anyhow::Result<()> {
     })?;
     origin.publish_broadcast(&args.broadcast, broadcast.consume());
 
+    // auto-reconnecting session: publishing resumes after relay-side drops
     let session = client
         .with_publish(origin.consume())
-        .connect(args.moq_url.clone())
-        .await?;
+        .reconnect(args.moq_url.clone());
     tracing::info!(url = %args.moq_url, broadcast = %args.broadcast, "publishing to MoQ relay");
 
+    // upstream ingest with reconnect + cursor resume (at-sync §4.3); frames
+    // at or below the last relayed seq are dropped as reconnect duplicates
+    let last_seq = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
+        args.cursor.unwrap_or(-1),
+    ));
     let (tx, mut rx) = mpsc::channel(256);
     let upstream = args.upstream.clone();
-    let cursor = args.cursor;
-    let mut ingest_task =
-        tokio::spawn(async move { ingest::subscribe_repos(&upstream, cursor, tx).await });
+    let ingest_seq = last_seq.clone();
+    tokio::spawn(async move {
+        let mut backoff = 1u64;
+        loop {
+            let cursor = match ingest_seq.load(std::sync::atomic::Ordering::Relaxed) {
+                -1 => None,
+                s => Some(s),
+            };
+            let started = std::time::Instant::now();
+            match ingest::subscribe_repos(&upstream, cursor, tx.clone()).await {
+                Ok(()) => tracing::warn!("upstream ended; reconnecting"),
+                Err(err) => tracing::warn!(?err, "upstream error; reconnecting"),
+            }
+            if tx.is_closed() {
+                return;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(60) {
+                backoff = 1;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(60);
+        }
+    });
 
     let mut group = track.append_group()?;
     let mut total = 0u64;
     loop {
-        tokio::select! {
-            frame = rx.recv() => {
-                let Some(frame) = frame else { break };
-                group.write_frame(Bytes::from(frame.raw))?;
-                total += 1;
-                if total % 100 == 0 {
-                    tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");
-                }
-                if group.frame_count() >= args.group_size {
-                    group.finish()?;
-                    group = track.append_group()?;
-                    tracing::debug!(sequence = group.sequence, "rotated group");
-                }
-            }
-            res = &mut ingest_task => {
-                res??;
+        let frame = tokio::select! {
+            f = rx.recv() => f,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("interrupted; finishing group");
                 break;
             }
+        };
+        let Some(frame) = frame else { break };
+        if let Some(seq) = frame.seq {
+            if seq <= last_seq.load(std::sync::atomic::Ordering::Relaxed) {
+                continue; // reconnect replay duplicate
+            }
+            last_seq.store(seq, std::sync::atomic::Ordering::Relaxed);
+        }
+        group.write_frame(Bytes::from(frame.raw))?;
+        total += 1;
+        if total % 100 == 0 {
+            tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");
+        }
+        if group.frame_count() >= args.group_size {
+            group.finish()?;
+            group = track.append_group()?;
+            tracing::debug!(sequence = group.sequence, "rotated group");
         }
     }
 
     group.finish()?;
     track.finish()?;
     drop(session);
-    tracing::info!(total, "upstream ended; relay shutting down");
+    tracing::info!(total, "shutting down");
     Ok(())
 }

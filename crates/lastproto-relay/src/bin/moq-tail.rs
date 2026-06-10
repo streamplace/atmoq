@@ -55,31 +55,66 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     tracing::info!(url = %args.moq_url, broadcast = %args.broadcast, "waiting for broadcast");
 
-    let broadcast = consumer
-        .announced_broadcast(&args.broadcast)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("origin closed before broadcast appeared"))?;
-    let mut track = broadcast.subscribe_track(&moq_net::Track {
-        name: args.track.clone(),
-        priority: 0,
-    })?;
-    tracing::info!("subscribed");
-
+    // Resilient reader: publishers come and go on public relays (restarts,
+    // network drops). Re-resolve the broadcast and resubscribe on any error
+    // or end-of-track instead of dying on a truncated in-flight frame.
     let (tx, mut rx) = mpsc::channel::<(u64, Vec<u8>)>(256);
+    let broadcast_name = args.broadcast.clone();
+    let track_name = args.track.clone();
     let reader = tokio::spawn(async move {
-        while let Some(mut group) = track.next_group().await? {
-            let sequence = group.sequence;
-            while let Some(data) = group.read_frame().await? {
-                if tx.send((sequence, data.to_vec())).await.is_err() {
-                    return Ok(());
+        loop {
+            let Some(broadcast) = consumer.announced_broadcast(&broadcast_name).await else {
+                tracing::info!("origin closed");
+                return anyhow::Ok(());
+            };
+            let mut track = match broadcast.subscribe_track(&moq_net::Track {
+                name: track_name.clone(),
+                priority: 0,
+            }) {
+                Ok(t) => t,
+                Err(err) => {
+                    tracing::warn!(?err, "subscribe failed; retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+            tracing::info!("subscribed");
+            'groups: loop {
+                let mut group = match track.next_group().await {
+                    Ok(Some(g)) => g,
+                    Ok(None) => {
+                        tracing::warn!("track ended; waiting for publisher to return");
+                        break 'groups;
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "group error; resubscribing");
+                        break 'groups;
+                    }
+                };
+                let sequence = group.sequence;
+                loop {
+                    match group.read_frame().await {
+                        Ok(Some(data)) => {
+                            if tx.send((sequence, data.to_vec())).await.is_err() {
+                                return anyhow::Ok(());
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            // publisher dropped mid-frame; the group is dead
+                            tracing::warn!(?err, "frame error; skipping rest of group");
+                            break;
+                        }
+                    }
                 }
             }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
-        anyhow::Ok(())
     });
 
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut count = 0usize;
+    let mut last_seq = i64::MIN;
     loop {
         let item = if args.idle_ms > 0 {
             match tokio::time::timeout(std::time::Duration::from_millis(args.idle_ms), rx.recv())
@@ -98,10 +133,17 @@ async fn main() -> anyhow::Result<()> {
         let (t, seq) = match Frame::parse(raw.clone()) {
             Ok(f) => (f.t, f.seq),
             Err(err) => {
-                tracing::warn!(?err, "frame failed to parse");
-                (None, None)
+                // garbage from a publisher that died mid-write; not a frame
+                tracing::warn!(?err, "skipping unparseable frame");
+                continue;
             }
         };
+        if let Some(s) = seq {
+            if s <= last_seq {
+                continue; // group replay after a resubscribe
+            }
+            last_seq = s;
+        }
         let mut line = serde_json::json!({ "t": t, "seq": seq, "group": group });
         if !args.no_raw {
             line["raw"] = serde_json::Value::String(b64.encode(&raw));
