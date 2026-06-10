@@ -18,6 +18,14 @@ test-unit:
 test-e2e:
     tests/e2e/test.sh
 
+# Relay the live Bluesky firehose through a public MoQ relay
+live-relay scope="lastproto-demo" relay_url="https://cdn.moq.dev/anon":
+    cargo run --release --bin relay -- wss://bsky.network {{relay_url}}/{{scope}}
+
+# Tail a live broadcast back from the public MoQ relay
+live-tail scope="lastproto-demo" relay_url="https://cdn.moq.dev/anon":
+    cargo run --release --bin moq-tail -- {{relay_url}}/{{scope}} --no-raw
+
 # Remove harness containers and image
 clean:
     -docker rm -f lastproto-e2e-run
