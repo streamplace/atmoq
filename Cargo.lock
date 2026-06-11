@@ -1346,7 +1346,8 @@ dependencies = [
 [[package]]
 name = "moq-native-ietf"
 version = "0.5.4"
-source = "git+https://github.com/cloudflare/moq-rs?rev=ebc843de8504e37d36c3134a1181513ebdf7a34a#ebc843de8504e37d36c3134a1181513ebdf7a34a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25d1513ff9e63cf39a14d9271d13610f1886da8dacf1e27f5d049fac2ef11d5f"
 dependencies = [
  "anyhow",
  "clap",
@@ -1389,7 +1390,8 @@ dependencies = [
 [[package]]
 name = "moq-transport"
 version = "0.10.0"
-source = "git+https://github.com/cloudflare/moq-rs?rev=ebc843de8504e37d36c3134a1181513ebdf7a34a#ebc843de8504e37d36c3134a1181513ebdf7a34a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efc7ff530e09675c245da0683e7fbcf8afd306d7abc8e84a8fc9b2c1971144e3"
 dependencies = [
  "bytes",
  "futures",

@@ -1,6 +1,9 @@
 [package]
 name = "atmoq"
-description = "atproto relay over MoQ transport (prototype)"
+description = "atproto firehose over MoQ transport: bridge, server, and consumer CLI"
+readme = "../../README.md"
+keywords = ["atproto", "moq", "quic", "firehose", "bluesky"]
+categories = ["network-programming", "command-line-utilities"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
