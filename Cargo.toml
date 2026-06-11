@@ -11,10 +11,13 @@ repository = "https://github.com/streamplace/atmoq"
 [workspace.dependencies]
 anyhow = "1"
 base64 = "0.22"
-# Cloudflare's production relay speaks draft-07 only (see docs/diag); these
-# maintenance-branch crates match it. Drop when CF deploys draft-14.
-moq-transport-07 = { package = "moq-transport", git = "https://github.com/cloudflare/moq-rs", rev = "ebc843de8504e37d36c3134a1181513ebdf7a34a" }
-moq-native-07 = { package = "moq-native-ietf", git = "https://github.com/cloudflare/moq-rs", rev = "ebc843de8504e37d36c3134a1181513ebdf7a34a" }
+# Cloudflare's production relay speaks draft-07 only (see docs/diag). These
+# crates.io releases (published from englishm/moq-rs, the lineage Cloudflare's
+# fork maintains) are byte-identical to the cloudflare/moq-rs
+# draft-ietf-moq-transport-07 branch @ ebc843de that we verified live.
+# Exact-pinned: the draft-07 line is frozen. Drop when CF deploys draft-14.
+moq-transport-07 = { package = "moq-transport", version = "=0.10.0" }
+moq-native-07 = { package = "moq-native-ietf", version = "=0.5.4" }
 ciborium = "0.2"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
