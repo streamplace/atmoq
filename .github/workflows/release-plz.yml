@@ -1,0 +1,96 @@
+name: release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Only one release run at a time; never cancel a release mid-flight.
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Opens/updates the "chore: release" PR that bumps the version and updates
+  # CHANGELOG.md. Merge that PR to cut a release (handled by the `release` job).
+  release-pr:
+    name: release PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: MarcoIeni/release-plz-action@v0.5
+        with:
+          command: release-pr
+        env:
+          # A PAT (RELEASE_PLZ_TOKEN) makes CI run on the release PR; without
+          # one we fall back to GITHUB_TOKEN, which still works but won't
+          # trigger the CI workflow on the PR it opens.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  # When the release PR merges (Cargo.toml version is ahead of the latest tag),
+  # cut the git tag and the GitHub release. publish=false in release-plz.toml
+  # keeps it off crates.io (git deps make the crate unpublishable there).
+  release:
+    name: tag + GitHub release
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+      releases: ${{ steps.release-plz.outputs.releases }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: MarcoIeni/release-plz-action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  # Build native binaries for each target and attach them to the release that
+  # the `release` job just created. Gated so it only runs on an actual release.
+  upload-binaries:
+    name: ${{ matrix.target }}
+    needs: release
+    if: needs.release.outputs.releases_created == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: atmoq
+          target: ${{ matrix.target }}
+          archive: atmoq-$tag-$target
+          checksum: sha256
+          # Upload to the tag release-plz just created, not the push event.
+          ref: refs/tags/${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
