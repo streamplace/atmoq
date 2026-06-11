@@ -12,18 +12,23 @@ Status: early prototype. One binary, `atmoq`, with a
 atmoq relay --moq-host https://cdn.moq.dev/anon/<scope>   # bridge wss://bsky.network -> MoQ
 atmoq firehose --moq-host https://cdn.moq.dev/anon/<scope> # consume it from anywhere
 atmoq firehose                                             # plain WS consumer, like goat firehose
+atmoq relay --moq-host https://relay.cloudflare.mediaoverquic.com \
+            --dialect ietf-07 --broadcast <scope>          # via Cloudflare's relay (draft-07)
 ```
 
-Frames are republished byte-for-byte (verified against the live Bluesky
-firehose through kixelated's public CDN), both legs auto-reconnect, the
-upstream cursor persists via `--cursor-file`, and consumers survive
+Frames are republished byte-for-byte — verified against the live Bluesky
+firehose through both kixelated's public CDN (moq-lite) and Cloudflare's
+public relay (draft-07 dialect). Both legs auto-reconnect on the lite path,
+the upstream cursor persists via `--cursor-file`, and consumers survive
 publisher restarts. See [docs/going-live.md](docs/going-live.md) for running
 this as a service.
 
 ```
-just live-relay   # wss://bsky.network -> cdn.moq.dev/anon/atmoq-demo
-just live-tail    # cdn.moq.dev -> stdout, from anywhere
-just test         # cargo test + Dockerized e2e (PLC + PDS + indigo oracle + MoQ leg)
+just live-relay      # wss://bsky.network -> cdn.moq.dev/anon/atmoq-demo
+just live-tail       # cdn.moq.dev -> stdout, from anywhere
+just live-relay-cf   # same, via Cloudflare's relay (draft-07)
+just live-tail-cf
+just test            # cargo test + Dockerized e2e (PLC + PDS + indigo oracle + MoQ leg)
 ```
 
 - [PLAN.md](PLAN.md) — implementation plan, milestones, open questions

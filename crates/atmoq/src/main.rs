@@ -9,7 +9,7 @@
 use base64::Engine;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use atmoq::{frame::Frame, ingest, json::cbor_to_json};
+use atmoq::{dialect07, frame::Frame, ingest, json::cbor_to_json};
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
@@ -26,6 +26,18 @@ enum Cmd {
     Firehose(FirehoseArgs),
     /// Bridge a WebSocket firehose onto a MoQ broadcast
     Relay(RelayArgs),
+}
+
+/// Which MoQ wire protocol to speak. Public relays differ (docs/diag):
+/// cdn.moq.dev speaks moq-lite; Cloudflare's production relay only speaks
+/// draft-ietf-moq-transport-07.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq)]
+enum Dialect {
+    /// moq-lite via moq-net (kixelated) — cdn.moq.dev, local moq-relay
+    Lite,
+    /// draft-ietf-moq-transport-07 — Cloudflare's production relay
+    #[value(name = "ietf-07")]
+    Ietf07,
 }
 
 #[derive(Parser)]
@@ -57,6 +69,9 @@ struct FirehoseArgs {
     /// Exit after this many milliseconds without an event (0 = never)
     #[arg(long, default_value_t = 0)]
     idle_ms: u64,
+    /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
+    #[arg(long, value_enum, default_value_t = Dialect::Lite)]
+    dialect: Dialect,
     #[command(flatten)]
     client: moq_native::ClientConfig,
 }
@@ -84,6 +99,9 @@ struct RelayArgs {
     /// Persist the upstream cursor here; resume from it on restart
     #[arg(long)]
     cursor_file: Option<std::path::PathBuf>,
+    /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
+    #[arg(long, value_enum, default_value_t = Dialect::Lite)]
+    dialect: Dialect,
     #[command(flatten)]
     client: moq_native::ClientConfig,
 }
@@ -112,17 +130,29 @@ type Item = (Option<u64>, Vec<u8>);
 async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Item>(256);
     if let Some(moq_url) = args.moq_host.clone() {
-        let client = args.client.clone().init()?;
-        let origin = moq_net::Origin::random().produce();
-        let consumer = origin.consume();
-        let _session = client.with_consume(origin).connect(moq_url.clone()).await?;
-        tracing::info!(url = %moq_url, broadcast = %args.broadcast, "consuming from MoQ relay");
-        let broadcast_name = args.broadcast.clone();
-        let track_name = args.track.clone();
-        tokio::spawn(async move {
-            moq_reader(consumer, broadcast_name, track_name, tx).await;
-            drop(_session);
-        });
+        if args.dialect == Dialect::Ietf07 {
+            let bind = args.client.bind;
+            let ns = args.broadcast.clone();
+            let track = args.track.clone();
+            tracing::info!(url = %moq_url, namespace = %ns, "consuming from MoQ relay (draft-07)");
+            tokio::spawn(async move {
+                if let Err(err) = dialect07::subscribe(&moq_url, bind, &ns, &track, tx).await {
+                    tracing::error!(?err, "draft-07 subscribe error");
+                }
+            });
+        } else {
+            let client = args.client.clone().init()?;
+            let origin = moq_net::Origin::random().produce();
+            let consumer = origin.consume();
+            let _session = client.with_consume(origin).connect(moq_url.clone()).await?;
+            tracing::info!(url = %moq_url, broadcast = %args.broadcast, "consuming from MoQ relay");
+            let broadcast_name = args.broadcast.clone();
+            let track_name = args.track.clone();
+            tokio::spawn(async move {
+                moq_reader(consumer, broadcast_name, track_name, tx).await;
+                drop(_session);
+            });
+        }
     } else {
         let upstream = args.relay_host.clone();
         let cursor = args.cursor;
@@ -262,20 +292,82 @@ async fn print_events(mut rx: mpsc::Receiver<Item>, args: &FirehoseArgs) -> anyh
     }
 }
 
-async fn relay(args: RelayArgs) -> anyhow::Result<()> {
-    let client = args.client.init()?;
-    let origin = moq_net::Origin::random().produce();
-    let mut broadcast = moq_net::Broadcast::new().produce();
-    let mut track = broadcast.create_track(moq_net::Track {
-        name: args.track.clone(),
-        priority: 0,
-    })?;
-    origin.publish_broadcast(&args.broadcast, broadcast.consume());
+/// Dialect-agnostic frame publisher with internal group rotation.
+enum FramePublisher {
+    Lite {
+        track: moq_net::TrackProducer,
+        group: moq_net::GroupProducer,
+        count: usize,
+    },
+    Ietf07(dialect07::Publisher07),
+}
 
-    // auto-reconnecting session: publishing resumes after relay-side drops
-    let session = client
-        .with_publish(origin.consume())
-        .reconnect(args.moq_host.clone());
+impl FramePublisher {
+    fn write(&mut self, data: Vec<u8>, group_size: usize) -> anyhow::Result<()> {
+        match self {
+            FramePublisher::Lite { track, group, count } => {
+                group.write_frame(Bytes::from(data))?;
+                *count += 1;
+                if *count >= group_size {
+                    let mut old = std::mem::replace(group, track.append_group()?);
+                    old.finish()?;
+                    *count = 0;
+                    tracing::debug!(sequence = group.sequence, "rotated group");
+                }
+                Ok(())
+            }
+            FramePublisher::Ietf07(p) => p.write(Bytes::from(data), group_size),
+        }
+    }
+
+    fn finish(self) -> anyhow::Result<()> {
+        match self {
+            FramePublisher::Lite { mut track, mut group, .. } => {
+                group.finish()?;
+                track.finish()?;
+                Ok(())
+            }
+            // dropping the subgroup/track writers closes them
+            FramePublisher::Ietf07(_) => Ok(()),
+        }
+    }
+}
+
+async fn relay(args: RelayArgs) -> anyhow::Result<()> {
+    // _keepalive holds whatever must not drop for publishing to continue
+    // (lite: the reconnecting session + origin producer).
+    let (mut publisher, _keepalive): (FramePublisher, Box<dyn std::any::Any>) =
+        match args.dialect {
+            Dialect::Lite => {
+                let client = args.client.clone().init()?;
+                let origin = moq_net::Origin::random().produce();
+                let mut broadcast = moq_net::Broadcast::new().produce();
+                let mut track = broadcast.create_track(moq_net::Track {
+                    name: args.track.clone(),
+                    priority: 0,
+                })?;
+                origin.publish_broadcast(&args.broadcast, broadcast.consume());
+                // auto-reconnecting session: publishing resumes after drops
+                let session = client
+                    .with_publish(origin.consume())
+                    .reconnect(args.moq_host.clone());
+                let group = track.append_group()?;
+                (
+                    FramePublisher::Lite { track, group, count: 0 },
+                    Box::new((session, origin, broadcast)),
+                )
+            }
+            Dialect::Ietf07 => {
+                let p = dialect07::publish(
+                    &args.moq_host,
+                    args.client.bind,
+                    &args.broadcast,
+                    &args.track,
+                )
+                .await?;
+                (FramePublisher::Ietf07(p), Box::new(()))
+            }
+        };
     tracing::info!(url = %args.moq_host, broadcast = %args.broadcast, "publishing to MoQ relay");
 
     // cursor: file takes precedence over flag
@@ -320,7 +412,6 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
         }
     });
 
-    let mut group = track.append_group()?;
     let mut total = 0u64;
     let mut cursor_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     cursor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -343,22 +434,15 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             }
             last_seq.store(seq, Ordering::Relaxed);
         }
-        group.write_frame(Bytes::from(frame.raw))?;
+        publisher.write(frame.raw, args.group_size)?;
         total += 1;
         if total % 100 == 0 {
             tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");
         }
-        if group.frame_count() >= args.group_size {
-            group.finish()?;
-            group = track.append_group()?;
-            tracing::debug!(sequence = group.sequence, "rotated group");
-        }
     }
 
-    group.finish()?;
-    track.finish()?;
+    publisher.finish()?;
     persist_cursor(&args.cursor_file, &last_seq);
-    drop(session);
     tracing::info!(total, "shutting down");
     Ok(())
 }

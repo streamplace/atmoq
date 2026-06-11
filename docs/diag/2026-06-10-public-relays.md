@@ -42,21 +42,24 @@ moq-net 0.1.10 / moq-native 0.17.0.
   So the [feature matrix](https://developers.cloudflare.com/moq/feature-matrix/)
   describes moq-rs `main`, not the deployed relay, and *no* draft-14 client
   (including Cloudflare's own) can use the public endpoint today.
-- Implications for atmoq: keep moq-net as the only backend for now. When
-  Cloudflare deploys draft-14, re-test moq-net as-is (it offers Draft14+ in
-  negotiation). If Cloudflare reach matters before then, the options are a
-  draft-07 backend behind our (tiny) transport seam — likely throwaway
-  work — or kixelated's JS `@moq/net` DRAFT_07 codepath for browser-side
-  consumers. Worth asking kixelated/Cloudflare about the draft-14 rollout
-  timeline before building anything.
+- **RESOLVED 2026-06-11: atmoq now speaks draft-07.** `--dialect ietf-07`
+  links the maintenance-branch cloudflare/moq-rs crates (pinned by rev in
+  Cargo.toml) behind the same publish/consume seam as moq-net. Verified
+  live: bsky.network → atmoq → relay.cloudflare.mediaoverquic.com → atmoq
+  firehose, **240 overlapping mainnet frames byte-identical** vs a direct
+  WS capture. v1 limitations vs the lite dialect: no session auto-reconnect
+  and no resubscribe-on-churn (process exits on session error; cursor state
+  makes restart lossless). Drop the dialect when Cloudflare deploys
+  draft-14 — moq-net should then connect as-is (offers Draft14+).
 
 ## Scorecard
 
-| Capability | cdn.moq.dev | Cloudflare |
+| Capability | cdn.moq.dev (`--dialect lite`) | Cloudflare (`--dialect ietf-07`) |
 |---|---|---|
 | Connect (IPv4) | ✅ default | ✅ with `--client-bind 0.0.0.0:0` |
 | Connect (IPv6) | ✅ | untested (no v6 here) |
-| Session establish | ✅ | ❌ draft-07 only (confirmed with CF's own clients) |
-| Publish / subscribe / announce | ✅ | ✅ via draft-07 clients only |
-| Byte-exact passthrough | ✅ | untested (needs draft-07 backend) |
+| Session establish | ✅ | ✅ (draft-07 dialect; draft-14 rejected, incl. CF's own client) |
+| Publish / subscribe | ✅ | ✅ |
+| Byte-exact passthrough | ✅ (62 live frames) | ✅ (240 live frames) |
+| Churn resilience | ✅ resubscribe + dedupe | ➖ v1: exit on session error, lossless restart via cursor |
 | Auth model | `/anon` prefix, JWT otherwise | none (unguessable names) |

@@ -26,6 +26,13 @@ live-relay scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
 live-tail scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
     cargo run --release --bin atmoq -- firehose --moq-host {{relay_url}}/{{scope}}
 
+# Same pair via Cloudflare's relay (draft-07 dialect; v4 bind for v4-only hosts)
+live-relay-cf scope="atmoq-demo":
+    cargo run --release --bin atmoq -- relay --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
+
+live-tail-cf scope="atmoq-demo":
+    cargo run --release --bin atmoq -- firehose --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
+
 # Remove harness containers and image
 clean:
     -docker rm -f atmoq-e2e-run

@@ -72,6 +72,9 @@ everything themselves anyway (§5.4).
   0001. MoQ relays may also drop groups under congestion (~30s cache), so
   lossless consumers should track seq and re-sync on gaps — which at-sync
   requires of them anyway.
-- Cloudflare's relay doesn't accept our sessions yet (WebTransport-layer
-  failure, see docs/diag/2026-06-10-public-relays.md) — cdn.moq.dev only
-  for now.
+- Cloudflare's production relay speaks draft-07 only; use
+  `--dialect ietf-07` (plus `--client-bind 0.0.0.0:0` on IPv4-only hosts).
+  The draft-07 path has no auto-reconnect yet — run it under a supervisor
+  (systemd `Restart=always`); `--cursor-file` makes restarts lossless. When
+  Cloudflare deploys draft-14, re-test the default `lite` dialect and retire
+  the 07 one (docs/diag/2026-06-10-public-relays.md).

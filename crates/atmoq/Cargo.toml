@@ -15,7 +15,9 @@ clap.workspace = true
 data-encoding = "2"
 futures-util.workspace = true
 moq-native = "0.17"
+moq-native-07.workspace = true
 moq-net = "0.1"
+moq-transport-07.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 serde.workspace = true
 serde_json.workspace = true

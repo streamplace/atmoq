@@ -142,7 +142,9 @@ dependencies = [
  "data-encoding",
  "futures-util",
  "moq-native",
+ "moq-native-ietf",
  "moq-net",
+ "moq-transport",
  "rustls",
  "serde",
  "serde_json",
@@ -403,6 +405,16 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "core-foundation"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
 ]
 
 [[package]]
@@ -1316,7 +1328,7 @@ dependencies = [
  "rcgen",
  "reqwest",
  "rustls",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.4",
  "rustls-webpki",
  "serde",
  "serde_with",
@@ -1326,7 +1338,30 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "web-transport-quinn",
+ "web-transport-quinn 0.11.9",
+]
+
+[[package]]
+name = "moq-native-ietf"
+version = "0.5.4"
+source = "git+https://github.com/cloudflare/moq-rs?rev=ebc843de8504e37d36c3134a1181513ebdf7a34a#ebc843de8504e37d36c3134a1181513ebdf7a34a"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "hex",
+ "log",
+ "moq-transport",
+ "quinn",
+ "ring",
+ "rustls",
+ "rustls-native-certs 0.7.3",
+ "rustls-pemfile",
+ "tokio",
+ "url",
+ "web-transport",
+ "web-transport-quinn 0.3.4",
+ "webpki",
 ]
 
 [[package]]
@@ -1347,6 +1382,20 @@ dependencies = [
  "tracing",
  "web-async",
  "web-transport-trait",
+]
+
+[[package]]
+name = "moq-transport"
+version = "0.10.0"
+source = "git+https://github.com/cloudflare/moq-rs?rev=ebc843de8504e37d36c3134a1181513ebdf7a34a#ebc843de8504e37d36c3134a1181513ebdf7a34a"
+dependencies = [
+ "bytes",
+ "futures",
+ "log",
+ "paste",
+ "thiserror 1.0.69",
+ "tokio",
+ "web-transport",
 ]
 
 [[package]]
@@ -1483,6 +1532,12 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openssl-probe"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
+
+[[package]]
+name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
@@ -1511,6 +1566,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "percent-encoding"
@@ -1606,7 +1667,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite 0.29.0",
  "tracing",
- "web-transport-proto",
+ "web-transport-proto 0.6.0",
  "web-transport-trait",
 ]
 
@@ -1900,6 +1961,7 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -1908,14 +1970,36 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5bfb394eeed242e909609f56089eecfe5fda225042e8b171791b9c95f5931e5"
+dependencies = [
+ "openssl-probe 0.1.6",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework 2.11.1",
+]
+
+[[package]]
+name = "rustls-native-certs"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
 dependencies = [
- "openssl-probe",
+ "openssl-probe 0.2.1",
  "rustls-pki-types",
  "schannel",
- "security-framework",
+ "security-framework 3.7.0",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -1934,16 +2018,16 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d99feebc72bae7ab76ba994bb5e121b8d83d910ca40b36e0921f53becc41784"
 dependencies = [
- "core-foundation",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "jni",
  "log",
  "once_cell",
  "rustls",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.4",
  "rustls-platform-verifier-android",
  "rustls-webpki",
- "security-framework",
+ "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
  "windows-sys 0.61.2",
@@ -2029,12 +2113,25 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "security-framework"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
+dependencies = [
+ "bitflags",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
 dependencies = [
  "bitflags",
- "core-foundation",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "libc",
  "security-framework-sys",
@@ -2435,7 +2532,7 @@ dependencies = [
  "futures-util",
  "log",
  "rustls",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.4",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -2523,6 +2620,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -2873,6 +2971,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-transport"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4703a5ad424f8eca7860903b94f6ed747cf58bebba3081ede78e84493a12440c"
+dependencies = [
+ "bytes",
+ "thiserror 1.0.69",
+ "web-transport-quinn 0.3.4",
+ "web-transport-wasm",
+]
+
+[[package]]
+name = "web-transport-proto"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "974fa1e325e6cc5327de8887f189a441fcff4f8eedcd31ec87f0ef0cc5283fbc"
+dependencies = [
+ "bytes",
+ "http",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
 name = "web-transport-proto"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2888,6 +3010,24 @@ dependencies = [
 
 [[package]]
 name = "web-transport-quinn"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3020b51cda10472a365e42d9a701916d4f04d74cc743de08246ef6a421c2d137"
+dependencies = [
+ "bytes",
+ "futures",
+ "http",
+ "log",
+ "quinn",
+ "quinn-proto",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+ "web-transport-proto 0.2.8",
+]
+
+[[package]]
+name = "web-transport-quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cac11b6caf163be7f980442a26fcba15e8074a5f22e85fbb71f0f77d11cecf60"
@@ -2897,12 +3037,12 @@ dependencies = [
  "http",
  "quinn",
  "rustls",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "url",
- "web-transport-proto",
+ "web-transport-proto 0.6.0",
  "web-transport-trait",
 ]
 
@@ -2913,6 +3053,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc5f83d19cf6c8ba147f4e1e5935a8a115c91f6abbf714d740a83b967d558e6e"
 dependencies = [
  "bytes",
+]
+
+[[package]]
+name = "web-transport-wasm"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66e8f572ad133af04a5aa4a207d48d3f6a2f1f3006aa1b8f0d774d28c085d699"
+dependencies = [
+ "bytes",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "webpki"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed63aea5ce73d0ff405984102c42de94fc55a6b75765d621c65262469b3c9b53"
+dependencies = [
+ "ring",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
