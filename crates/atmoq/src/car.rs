@@ -19,7 +19,9 @@ pub fn blocks(data: &[u8]) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
 
     let mut out = HashMap::new();
     while !cur.is_empty() {
-        let Ok(entry_len) = varint(&mut cur) else { break };
+        let Ok(entry_len) = varint(&mut cur) else {
+            break;
+        };
         let entry_len = entry_len as usize;
         if entry_len > cur.len() {
             break; // truncated trailing entry
