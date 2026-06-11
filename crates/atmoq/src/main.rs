@@ -521,8 +521,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if let Ok(bind) = args.web_tls_bind.parse::<std::net::SocketAddr>() {
         match (args.server.tls.cert.first(), args.server.tls.key.first()) {
             (Some(cert), Some(key)) => {
-                let page =
-                    atmoq::web::landing_page(&args.host, &args.broadcast, &args.track);
+                let page = atmoq::web::landing_page(&args.host, &args.broadcast, &args.track);
                 let (cert, key) = (cert.clone(), key.clone());
                 tokio::spawn(async move {
                     if let Err(err) = atmoq::web::serve_landing(bind, &cert, &key, page).await {
@@ -530,9 +529,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     }
                 });
             }
-            _ => tracing::info!(
-                "no --tls-cert/--tls-key; skipping https landing page (dev mode)"
-            ),
+            _ => tracing::info!("no --tls-cert/--tls-key; skipping https landing page (dev mode)"),
         }
     }
 

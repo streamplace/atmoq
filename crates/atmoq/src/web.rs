@@ -111,7 +111,9 @@ pub async fn serve_landing(
 }
 
 /// Read one request head; return (path, host-header) on a plausible GET.
-async fn read_request<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Option<(String, Option<String>)> {
+async fn read_request<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+) -> Option<(String, Option<String>)> {
     let mut buf = vec![0u8; 4096];
     let mut len = 0;
     loop {
