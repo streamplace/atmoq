@@ -29,17 +29,26 @@ moq-net 0.1.10 / moq-native 0.17.0.
     says draft-07 + draft-14),
   - scoped path (`/<scope>`) and bare path,
   - `moqt://` raw-QUIC scheme.
-- Working hypothesis: **WebTransport-layer draft skew** — failure happens at
-  capsule read, *before* any MOQT version negotiation could matter, and the
-  raw-QUIC ALPN path is refused too. Cloudflare's relay is a fork of older
-  kixelated code and may speak an older WebTransport draft / ALPN set than
-  web-transport-quinn's current ratified-spec implementation.
-- Next steps: capture qlog/quinn traces; test their JS client (`@moq/net`
-  has a DRAFT_07 codepath the Rust crate doesn't) against the same endpoint
-  to separate "endpoint is picky" from "endpoint is down for everyone";
-  ask in the MoQ Discord/Slack — kixelated told Eli moq-lite would be fully
-  compatible with Cloudflare's relays, so either this is a regression, a
-  missing knob, or interop work that's still landing.
+- ~~Working hypothesis: WebTransport-layer draft skew.~~ **CONFIRMED
+  2026-06-11: the endpoint speaks draft-07 only.** cloudflare/moq-rs's
+  README says it plainly: main targets draft-14, but "Cloudflare's current
+  production deployment" uses the `draft-ietf-moq-transport-07` branch.
+  Verified empirically from this host:
+  - their **draft-07 branch** `moq-clock-ietf` (pub + sub): **works
+    end-to-end** through relay.cloudflare.mediaoverquic.com;
+  - their **main branch (draft-14)** `moq-clock-ietf`: connects, then
+    `session error: connection error: closed` — the same post-handshake
+    rejection our moq-net client gets.
+  So the [feature matrix](https://developers.cloudflare.com/moq/feature-matrix/)
+  describes moq-rs `main`, not the deployed relay, and *no* draft-14 client
+  (including Cloudflare's own) can use the public endpoint today.
+- Implications for atmoq: keep moq-net as the only backend for now. When
+  Cloudflare deploys draft-14, re-test moq-net as-is (it offers Draft14+ in
+  negotiation). If Cloudflare reach matters before then, the options are a
+  draft-07 backend behind our (tiny) transport seam — likely throwaway
+  work — or kixelated's JS `@moq/net` DRAFT_07 codepath for browser-side
+  consumers. Worth asking kixelated/Cloudflare about the draft-14 rollout
+  timeline before building anything.
 
 ## Scorecard
 
@@ -47,7 +56,7 @@ moq-net 0.1.10 / moq-native 0.17.0.
 |---|---|---|
 | Connect (IPv4) | ✅ default | ✅ with `--client-bind 0.0.0.0:0` |
 | Connect (IPv6) | ✅ | untested (no v6 here) |
-| Session establish | ✅ | ❌ WT capsule failure |
-| Publish / subscribe / announce | ✅ | — |
-| Byte-exact passthrough | ✅ | — |
+| Session establish | ✅ | ❌ draft-07 only (confirmed with CF's own clients) |
+| Publish / subscribe / announce | ✅ | ✅ via draft-07 clients only |
+| Byte-exact passthrough | ✅ | untested (needs draft-07 backend) |
 | Auth model | `/anon` prefix, JWT otherwise | none (unguessable names) |
