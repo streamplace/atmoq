@@ -70,7 +70,14 @@ caching/clustering or third-party publishers.
   that's the entire point, your egress doesn't scale with audience.
 - systemd unit or container; `--cursor-file` on persistent disk. On restart
   the upstream replays from the cursor (bsky.network's backfill window is
-  ~72h) and duplicates are dropped, so brief downtime loses nothing.
+  ~72h) and duplicates are dropped, so brief downtime loses nothing. A
+  prebuilt image is published to GHCR on every release:
+
+  ```bash
+  docker run -v atmoq-data:/data ghcr.io/streamplace/atmoq relay \
+    --moq-host https://cdn.moq.dev/anon/<unguessable-scope> \
+    --cursor-file /data/cursor
+  ```
 
 ### Tier 1 — things to fix before telling other people to consume it
 
