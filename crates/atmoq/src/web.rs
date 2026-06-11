@@ -18,7 +18,7 @@ const BANNER: &str = r#"        _
 pub fn landing_page(host: &str, broadcast: &str, track: &str) -> String {
     format!(
         "{BANNER}\n\
-        This is an atproto [https://atproto.com] firehose fanout service,\n\
+        This is an atproto [https://atproto.com] relay,\n\
         running the 'atmoq' codebase [https://github.com/streamplace/atmoq],\n\
         serving the firehose over MoQ [https://moq.dev].\n\
         \n\
@@ -30,6 +30,7 @@ pub fn landing_page(host: &str, broadcast: &str, track: &str) -> String {
         \n\
         Consume it with:\n\
         \n\
+        cargo install atmoq\n\
         atmoq firehose --moq-host https://{host}\n"
     )
 }
