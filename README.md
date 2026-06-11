@@ -9,11 +9,15 @@ Status: early prototype. One binary, `atmoq`, with a
 [goat](https://github.com/bluesky-social/goat)-shaped CLI:
 
 ```
-atmoq relay --moq-host https://cdn.moq.dev/anon/<scope>   # bridge wss://bsky.network -> MoQ
-atmoq firehose --moq-host https://cdn.moq.dev/anon/<scope> # consume it from anywhere
-atmoq firehose                                             # plain WS consumer, like goat firehose
+atmoq firehose                                  # tail the atproto firehose over MoQ
+                                                # (default: https://streamplace.network)
+atmoq firehose --ops                            # ...as individual record operations
+atmoq firehose --relay-host wss://bsky.network  # plain WS consumer, like goat firehose
+atmoq serve                                     # host your own: WS ingest -> MoQ fanout,
+                                                # with a landing page (see docs/going-live.md)
+atmoq relay --moq-host https://cdn.moq.dev/anon/<scope>    # bridge through a public MoQ relay
 atmoq relay --moq-host https://relay.cloudflare.mediaoverquic.com \
-            --dialect ietf-07 --broadcast <scope>          # via Cloudflare's relay (draft-07)
+            --dialect ietf-07 --broadcast <scope>          # ...including Cloudflare's (draft-07)
 ```
 
 Frames are republished byte-for-byte — verified against the live Bluesky

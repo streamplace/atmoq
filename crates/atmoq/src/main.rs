@@ -45,12 +45,13 @@ enum Dialect {
 
 #[derive(Parser)]
 struct FirehoseArgs {
-    /// Method, hostname, and port of WebSocket relay/PDS instance
-    #[arg(long, default_value = "wss://bsky.network")]
-    relay_host: String,
-    /// MoQ relay URL; if set, consume over MoQ instead of WebSocket
-    #[arg(long)]
-    moq_host: Option<url::Url>,
+    /// Consume over WebSocket from this relay/PDS instead of MoQ
+    /// (e.g. wss://bsky.network)
+    #[arg(long, conflicts_with = "moq_host")]
+    relay_host: Option<String>,
+    /// MoQ relay URL to consume from
+    #[arg(long, default_value = "https://streamplace.network")]
+    moq_host: url::Url,
     /// Broadcast path under the MoQ connection URL's scope
     #[arg(long, default_value = "atproto")]
     broadcast: String,
@@ -58,7 +59,7 @@ struct FirehoseArgs {
     #[arg(long, default_value = "atproto")]
     track: String,
     /// Cursor to consume at (WebSocket source only)
-    #[arg(long)]
+    #[arg(long, requires = "relay_host")]
     cursor: Option<i64>,
     /// Include raw frame bytes as base64 in output
     #[arg(long)]
@@ -170,7 +171,8 @@ type Item = (Option<u64>, Vec<u8>);
 
 async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Item>(256);
-    if let Some(moq_url) = args.moq_host.clone() {
+    if args.relay_host.is_none() {
+        let moq_url = args.moq_host.clone();
         if args.dialect == Dialect::Ietf07 {
             tracing::info!(url = %moq_url, namespace = %args.broadcast, "consuming from MoQ relay (draft-07)");
             tokio::spawn(dialect07::subscribe_loop(
@@ -194,7 +196,7 @@ async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
             });
         }
     } else {
-        let upstream = args.relay_host.clone();
+        let upstream = args.relay_host.clone().expect("relay_host checked above");
         let cursor = args.cursor;
         tokio::spawn(async move {
             let (ftx, mut frx) = mpsc::channel(256);
