@@ -1,0 +1,39 @@
+name: e2e
+
+# Dockerized differential harness: a local atproto network (PLC + PDS) + the
+# indigo relay as an oracle + atmoq, verifying that frames republished over MoQ
+# are byte-identical to the source firehose. Heavier and slower than `ci`, so
+# it's a separate workflow and skips doc-only changes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "tests/e2e/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "tests/e2e/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/e2e.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: differential harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # Builds the harness image (indigo + moq-relay + atmoq + node), runs it,
+      # drives writes, and diffs the MoQ output against the source firehose.
+      - run: tests/e2e/test.sh

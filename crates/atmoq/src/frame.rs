@@ -92,7 +92,10 @@ mod tests {
     fn parses_commit_frame() {
         let payload = Value::Map(vec![
             (Value::Text("seq".into()), Value::Integer(42.into())),
-            (Value::Text("repo".into()), Value::Text("did:plc:abc".into())),
+            (
+                Value::Text("repo".into()),
+                Value::Text("did:plc:abc".into()),
+            ),
         ]);
         let raw = frame_bytes(1, Some("#commit"), payload);
         let f = Frame::parse(raw.clone()).unwrap();

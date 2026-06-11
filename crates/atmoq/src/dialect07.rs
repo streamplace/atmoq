@@ -61,9 +61,7 @@ pub async fn publish(
         namespace: Tuple::from_utf8_path(namespace),
     }
     .produce();
-    let track = tracks
-        .create(track)
-        .context("failed to create track")?;
+    let track = tracks.create(track).context("failed to create track")?;
     let groups = track.groups()?;
 
     let dead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -134,8 +132,19 @@ pub struct ResilientPublisher {
 }
 
 impl ResilientPublisher {
-    pub fn new(url: url::Url, bind: std::net::SocketAddr, namespace: String, track: String) -> Self {
-        Self { url, bind, namespace, track, inner: None }
+    pub fn new(
+        url: url::Url,
+        bind: std::net::SocketAddr,
+        namespace: String,
+        track: String,
+    ) -> Self {
+        Self {
+            url,
+            bind,
+            namespace,
+            track,
+            inner: None,
+        }
     }
 
     pub async fn write(&mut self, data: Bytes, group_size: usize) -> Result<()> {
@@ -153,7 +162,9 @@ impl ResilientPublisher {
                         // silently loses frames into a doomed session.
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         if p.is_dead() {
-                            tracing::warn!("draft-07 announce rejected (namespace claimed?); retrying");
+                            tracing::warn!(
+                                "draft-07 announce rejected (namespace claimed?); retrying"
+                            );
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                             continue;
                         }

@@ -6,10 +6,10 @@
 //! MoQ relay (--moq-host) as the source. `atmoq relay` is the bridge:
 //! it consumes a WebSocket firehose and republishes it over MoQ.
 
+use atmoq::{dialect07, frame::Frame, ingest, json::cbor_to_json};
 use base64::Engine;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use atmoq::{dialect07, frame::Frame, ingest, json::cbor_to_json};
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
@@ -117,8 +117,7 @@ async fn main() -> anyhow::Result<()> {
         .expect("install rustls crypto provider");
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -318,11 +317,17 @@ fn print_ops(payload: &ciborium::Value, quiet: bool) -> anyhow::Result<usize> {
         .and_then(|v| v.as_array())
         .context("commit missing ops")?;
 
-    let str_field = |key: &str| field(payload, key).and_then(|v| v.as_text()).map(str::to_owned);
+    let str_field = |key: &str| {
+        field(payload, key)
+            .and_then(|v| v.as_text())
+            .map(str::to_owned)
+    };
     let repo = str_field("repo");
     let rev = str_field("rev");
     let time = str_field("time");
-    let seq = field(payload, "seq").and_then(|v| v.as_integer()).map(|i| i128::from(i) as i64);
+    let seq = field(payload, "seq")
+        .and_then(|v| v.as_integer())
+        .map(|i| i128::from(i) as i64);
 
     let mut printed = 0usize;
     for op in ops {
@@ -361,13 +366,17 @@ enum FramePublisher {
         group: moq_net::GroupProducer,
         count: usize,
     },
-    Ietf07(dialect07::ResilientPublisher),
+    Ietf07(Box<dialect07::ResilientPublisher>),
 }
 
 impl FramePublisher {
     async fn write(&mut self, data: Vec<u8>, group_size: usize) -> anyhow::Result<()> {
         match self {
-            FramePublisher::Lite { track, group, count } => {
+            FramePublisher::Lite {
+                track,
+                group,
+                count,
+            } => {
                 group.write_frame(Bytes::from(data))?;
                 *count += 1;
                 if *count >= group_size {
@@ -384,7 +393,11 @@ impl FramePublisher {
 
     fn finish(self) -> anyhow::Result<()> {
         match self {
-            FramePublisher::Lite { mut track, mut group, .. } => {
+            FramePublisher::Lite {
+                mut track,
+                mut group,
+                ..
+            } => {
                 group.finish()?;
                 track.finish()?;
                 Ok(())
@@ -398,37 +411,40 @@ impl FramePublisher {
 async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     // _keepalive holds whatever must not drop for publishing to continue
     // (lite: the reconnecting session + origin producer).
-    let (mut publisher, _keepalive): (FramePublisher, Box<dyn std::any::Any>) =
-        match args.dialect {
-            Dialect::Lite => {
-                let client = args.client.clone().init()?;
-                let origin = moq_net::Origin::random().produce();
-                let mut broadcast = moq_net::Broadcast::new().produce();
-                let mut track = broadcast.create_track(moq_net::Track {
-                    name: args.track.clone(),
-                    priority: 0,
-                })?;
-                origin.publish_broadcast(&args.broadcast, broadcast.consume());
-                // auto-reconnecting session: publishing resumes after drops
-                let session = client
-                    .with_publish(origin.consume())
-                    .reconnect(args.moq_host.clone());
-                let group = track.append_group()?;
-                (
-                    FramePublisher::Lite { track, group, count: 0 },
-                    Box::new((session, origin, broadcast)),
-                )
-            }
-            Dialect::Ietf07 => (
-                FramePublisher::Ietf07(dialect07::ResilientPublisher::new(
-                    args.moq_host.clone(),
-                    args.client.bind,
-                    args.broadcast.clone(),
-                    args.track.clone(),
-                )),
-                Box::new(()),
-            ),
-        };
+    let (mut publisher, _keepalive): (FramePublisher, Box<dyn std::any::Any>) = match args.dialect {
+        Dialect::Lite => {
+            let client = args.client.clone().init()?;
+            let origin = moq_net::Origin::random().produce();
+            let mut broadcast = moq_net::Broadcast::new().produce();
+            let mut track = broadcast.create_track(moq_net::Track {
+                name: args.track.clone(),
+                priority: 0,
+            })?;
+            origin.publish_broadcast(&args.broadcast, broadcast.consume());
+            // auto-reconnecting session: publishing resumes after drops
+            let session = client
+                .with_publish(origin.consume())
+                .reconnect(args.moq_host.clone());
+            let group = track.append_group()?;
+            (
+                FramePublisher::Lite {
+                    track,
+                    group,
+                    count: 0,
+                },
+                Box::new((session, origin, broadcast)),
+            )
+        }
+        Dialect::Ietf07 => (
+            FramePublisher::Ietf07(Box::new(dialect07::ResilientPublisher::new(
+                args.moq_host.clone(),
+                args.client.bind,
+                args.broadcast.clone(),
+                args.track.clone(),
+            ))),
+            Box::new(()),
+        ),
+    };
     tracing::info!(url = %args.moq_host, broadcast = %args.broadcast, "publishing to MoQ relay");
 
     // cursor: file takes precedence over flag
@@ -497,7 +513,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
         }
         publisher.write(frame.raw, args.group_size).await?;
         total += 1;
-        if total % 100 == 0 {
+        if total.is_multiple_of(100) {
             tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");
         }
     }
@@ -508,10 +524,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn persist_cursor(
-    path: &Option<std::path::PathBuf>,
-    last_seq: &std::sync::atomic::AtomicI64,
-) {
+fn persist_cursor(path: &Option<std::path::PathBuf>, last_seq: &std::sync::atomic::AtomicI64) {
     let Some(path) = path else { return };
     let seq = last_seq.load(Ordering::Relaxed);
     if seq < 0 {
