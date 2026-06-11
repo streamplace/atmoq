@@ -3,6 +3,11 @@
 default:
     @just --list
 
+# Install git hooks (rustfmt on commit) for this clone
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "pre-commit rustfmt hook enabled"
+
 # Build the e2e harness Docker image (PLC + PDS + indigo relay oracle + atmoq)
 build:
     docker build -t atmoq-e2e -f tests/e2e/Dockerfile .
