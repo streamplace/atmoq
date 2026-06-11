@@ -20,6 +20,10 @@ atmoq relay --moq-host https://relay.cloudflare.mediaoverquic.com \
             --dialect ietf-07 --broadcast <scope>          # ...including Cloudflare's (draft-07)
 ```
 
+On Windows (and other hosts where a wildcard IPv6 socket can't reach IPv4),
+add `--client-bind 0.0.0.0:0` if you see `sendmsg error ... 10049` /
+`AddrNotAvailable`.
+
 Frames are republished byte-for-byte — verified against the live Bluesky
 firehose through both kixelated's public CDN (moq-lite) and Cloudflare's
 public relay (draft-07 dialect). Both legs auto-reconnect on the lite path,
