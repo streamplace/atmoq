@@ -24,8 +24,11 @@ struct Cli {
 enum Cmd {
     /// Stream repo and identity events (from a WebSocket or MoQ relay)
     Firehose(FirehoseArgs),
-    /// Bridge a WebSocket firehose onto a MoQ broadcast
+    /// Bridge a WebSocket firehose onto a MoQ broadcast (via a MoQ relay)
     Relay(RelayArgs),
+    /// Bridge a WebSocket firehose and serve MoQ subscribers directly —
+    /// no external MoQ relay needed
+    Serve(ServeArgs),
 }
 
 /// Which MoQ wire protocol to speak. Public relays differ (docs/diag):
@@ -110,6 +113,30 @@ struct RelayArgs {
     client: moq_native::ClientConfig,
 }
 
+#[derive(Parser)]
+struct ServeArgs {
+    /// Method, hostname, and port of the upstream WebSocket relay/PDS
+    #[arg(long, default_value = "wss://bsky.network")]
+    relay_host: String,
+    /// Broadcast path served to subscribers
+    #[arg(long, default_value = "firehose")]
+    broadcast: String,
+    /// Track name within the broadcast
+    #[arg(long, default_value = "firehose")]
+    track: String,
+    /// Frames per MoQ group (late-join replay depth)
+    #[arg(long, default_value_t = 64)]
+    group_size: usize,
+    /// Upstream cursor to resume from (overridden by --cursor-file if present)
+    #[arg(long)]
+    cursor: Option<i64>,
+    /// Persist the upstream cursor here; resume from it on restart
+    #[arg(long)]
+    cursor_file: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    server: moq_native::ServerConfig,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
@@ -124,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
         Cmd::Firehose(args) => firehose(args).await,
         Cmd::Relay(args) => relay(args).await,
+        Cmd::Serve(args) => serve(args).await,
     }
 }
 
@@ -411,7 +439,7 @@ impl FramePublisher {
 async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     // _keepalive holds whatever must not drop for publishing to continue
     // (lite: the reconnecting session + origin producer).
-    let (mut publisher, _keepalive): (FramePublisher, Box<dyn std::any::Any>) = match args.dialect {
+    let (publisher, _keepalive): (FramePublisher, Box<dyn std::any::Any>) = match args.dialect {
         Dialect::Lite => {
             let client = args.client.clone().init()?;
             let origin = moq_net::Origin::random().produce();
@@ -447,29 +475,88 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     };
     tracing::info!(url = %args.moq_host, broadcast = %args.broadcast, "publishing to MoQ relay");
 
-    // cursor: file takes precedence over flag
-    let initial = match &args.cursor_file {
+    let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
+    let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
+    pump(rx, publisher, args.group_size, args.cursor_file, last_seq).await
+}
+
+/// Serve MoQ subscribers directly from this process: the firehose broadcast
+/// lives in a local origin and accepted sessions may only consume it
+/// (`with_publish` only — no session can publish into us, so there is no
+/// namespace to squat).
+async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let origin = moq_net::Origin::random().produce();
+    let mut broadcast = moq_net::Broadcast::new().produce();
+    let mut track = broadcast.create_track(moq_net::Track {
+        name: args.track.clone(),
+        priority: 0,
+    })?;
+    origin.publish_broadcast(&args.broadcast, broadcast.consume());
+    let group = track.append_group()?;
+    let publisher = FramePublisher::Lite {
+        track,
+        group,
+        count: 0,
+    };
+
+    let mut server = args.server.init()?;
+    tracing::info!(broadcast = %args.broadcast, "serving MoQ subscribers");
+    tokio::spawn(async move {
+        while let Some(request) = server.accept().await {
+            let consume = origin.consume();
+            tokio::spawn(async move {
+                match request.with_publish(consume).ok().await {
+                    Ok(session) => {
+                        tracing::info!("subscriber connected");
+                        if let Err(err) = session.closed().await {
+                            tracing::debug!(?err, "subscriber session ended");
+                        }
+                    }
+                    Err(err) => tracing::warn!(?err, "session rejected"),
+                }
+            });
+        }
+        tracing::warn!("server accept loop ended");
+    });
+
+    let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
+    let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
+    let result = pump(rx, publisher, args.group_size, args.cursor_file, last_seq).await;
+    drop(broadcast);
+    result
+}
+
+type SharedSeq = std::sync::Arc<std::sync::atomic::AtomicI64>;
+
+/// Cursor file takes precedence over the flag.
+fn load_initial_cursor(
+    cursor_file: &Option<std::path::PathBuf>,
+    cursor: Option<i64>,
+) -> anyhow::Result<SharedSeq> {
+    let initial = match cursor_file {
         Some(path) => match std::fs::read_to_string(path) {
             Ok(s) => {
                 let c = s.trim().parse::<i64>()?;
                 tracing::info!(cursor = c, path = %path.display(), "resuming from cursor file");
                 Some(c)
             }
-            Err(_) => args.cursor,
+            Err(_) => cursor,
         },
-        None => args.cursor,
+        None => cursor,
     };
-    let last_seq = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(initial.unwrap_or(-1)));
+    Ok(std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
+        initial.unwrap_or(-1),
+    )))
+}
 
-    // upstream ingest with reconnect + cursor resume (at-sync §4.3); frames
-    // at or below the last relayed seq are dropped as reconnect duplicates
-    let (tx, mut rx) = mpsc::channel(256);
-    let upstream = args.relay_host.clone();
-    let ingest_seq = last_seq.clone();
+/// Upstream ingest with reconnect + cursor resume (at-sync §4.3); frames at
+/// or below the last relayed seq are dropped downstream as duplicates.
+fn spawn_ingest(upstream: String, last_seq: SharedSeq) -> mpsc::Receiver<Frame> {
+    let (tx, rx) = mpsc::channel(256);
     tokio::spawn(async move {
         let mut backoff = 1u64;
         loop {
-            let cursor = match ingest_seq.load(Ordering::Relaxed) {
+            let cursor = match last_seq.load(Ordering::Relaxed) {
                 -1 => None,
                 s => Some(s),
             };
@@ -488,7 +575,18 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             backoff = (backoff * 2).min(60);
         }
     });
+    rx
+}
 
+/// Main pump: upstream frames → MoQ publisher, with seq dedupe, periodic
+/// cursor persistence, and a clean group finish on ctrl-c.
+async fn pump(
+    mut rx: mpsc::Receiver<Frame>,
+    mut publisher: FramePublisher,
+    group_size: usize,
+    cursor_file: Option<std::path::PathBuf>,
+    last_seq: SharedSeq,
+) -> anyhow::Result<()> {
     let mut total = 0u64;
     let mut cursor_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     cursor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -496,7 +594,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
         let frame = tokio::select! {
             f = rx.recv() => f,
             _ = cursor_tick.tick() => {
-                persist_cursor(&args.cursor_file, &last_seq);
+                persist_cursor(&cursor_file, &last_seq);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -511,7 +609,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             }
             last_seq.store(seq, Ordering::Relaxed);
         }
-        publisher.write(frame.raw, args.group_size).await?;
+        publisher.write(frame.raw, group_size).await?;
         total += 1;
         if total.is_multiple_of(100) {
             tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");
@@ -519,7 +617,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     }
 
     publisher.finish()?;
-    persist_cursor(&args.cursor_file, &last_seq);
+    persist_cursor(&cursor_file, &last_seq);
     tracing::info!(total, "shutting down");
     Ok(())
 }

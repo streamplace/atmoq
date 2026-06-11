@@ -21,6 +21,44 @@ proven by `tests/e2e` and live diffs against bsky.network), reconnects both
 legs automatically, resumes the upstream from a persisted cursor, and
 consumers survive publisher restarts.
 
+## Self-hosting: `atmoq serve` (one process, your box)
+
+If you'd rather not depend on public relays at all (squattable namespaces,
+preview-grade auth), `atmoq serve` makes the bridge process itself the MoQ
+server — subscribers connect straight to you:
+
+```bash
+atmoq serve \
+  --server-bind '[::]:443' \
+  --tls-cert /etc/letsencrypt/live/relay.example.network/fullchain.pem \
+  --tls-key  /etc/letsencrypt/live/relay.example.network/privkey.pem \
+  --cursor-file /var/lib/atmoq/cursor
+# consumers, anywhere:
+atmoq firehose --moq-host https://relay.example.network
+```
+
+Properties:
+
+- **No squatting, by construction**: accepted sessions get consume-only
+  wiring (`with_publish`, never `with_consume`) — nothing can publish into
+  your origin. The whole pointer/rotation dance in docs/design/discovery.md
+  becomes unnecessary; your hostname is the stable URL.
+- Speaks moq-lite (+ negotiated IETF drafts via moq-native), QUIC with
+  WebSocket fallback; browsers work with a real TLS cert (`--tls-generate
+  localhost` + `--tls-disable-verify` for dev only).
+- Fan-out is your pipe: a ~10 Mbps firehose over a 2 Gbps uplink ≈ 150–200
+  direct subscribers. Public CDNs can be layered back in front later (they'd
+  subscribe to you like any consumer) once their auth stories land.
+- What you give up vs a real moq-relay deployment: relay-tier caching,
+  clustering, JWT auth scoping, and the operational maturity of kixelated's
+  relay. For a single-box firehose distributor, none of those bite.
+
+The alternative self-host (two processes, more knobs): `cargo install
+moq-relay`, the TOML from `tests/e2e/moq-relay.toml` adapted with real
+certs + a `moq-token` root for authed publish, and `atmoq relay
+--moq-host https://localhost:443/...` next to it. Worth it once you want
+caching/clustering or third-party publishers.
+
 ## What "live" costs, by tier
 
 ### Tier 0 — what works right now (one process, public CDN)

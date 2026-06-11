@@ -26,6 +26,10 @@ live-relay scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
 live-tail scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
     cargo run --release --bin atmoq -- firehose --moq-host {{relay_url}}/{{scope}}
 
+# Serve MoQ subscribers directly from this box (dev TLS; use --tls-cert/key in prod)
+live-serve bind="[::]:4443":
+    cargo run --release --bin atmoq -- serve --server-bind '{{bind}}' --tls-generate localhost
+
 # Same pair via Cloudflare's relay (draft-07 dialect; v4 bind for v4-only hosts)
 live-relay-cf scope="atmoq-demo":
     cargo run --release --bin atmoq -- relay --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
