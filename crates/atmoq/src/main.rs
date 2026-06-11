@@ -52,10 +52,10 @@ struct FirehoseArgs {
     #[arg(long)]
     moq_host: Option<url::Url>,
     /// Broadcast path under the MoQ connection URL's scope
-    #[arg(long, default_value = "firehose")]
+    #[arg(long, default_value = "atproto")]
     broadcast: String,
     /// Track name within the broadcast
-    #[arg(long, default_value = "firehose")]
+    #[arg(long, default_value = "atproto")]
     track: String,
     /// Cursor to consume at (WebSocket source only)
     #[arg(long)]
@@ -92,10 +92,10 @@ struct RelayArgs {
     #[arg(long)]
     moq_host: url::Url,
     /// Broadcast path published under the connection URL's scope
-    #[arg(long, default_value = "firehose")]
+    #[arg(long, default_value = "atproto")]
     broadcast: String,
     /// Track name within the broadcast
-    #[arg(long, default_value = "firehose")]
+    #[arg(long, default_value = "atproto")]
     track: String,
     /// Frames per MoQ group (late-join replay depth / drop granularity)
     #[arg(long, default_value_t = 64)]
@@ -119,11 +119,21 @@ struct ServeArgs {
     #[arg(long, default_value = "wss://bsky.network")]
     relay_host: String,
     /// Broadcast path served to subscribers
-    #[arg(long, default_value = "firehose")]
+    #[arg(long, default_value = "atproto")]
     broadcast: String,
     /// Track name within the broadcast
-    #[arg(long, default_value = "firehose")]
+    #[arg(long, default_value = "atproto")]
     track: String,
+    /// Public hostname (used by the landing page and redirects)
+    #[arg(long, default_value = "localhost")]
+    host: String,
+    /// Bind for the plain-HTTP -> HTTPS redirect (empty string to disable)
+    #[arg(long, default_value = "[::]:80")]
+    web_bind: String,
+    /// Bind for the HTTPS landing page (empty string to disable; requires
+    /// --tls-cert/--tls-key)
+    #[arg(long, default_value = "[::]:443")]
+    web_tls_bind: String,
     /// Frames per MoQ group (late-join replay depth)
     #[arg(long, default_value_t = 64)]
     group_size: usize,
@@ -498,6 +508,33 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         group,
         count: 0,
     };
+
+    // human-facing web frontend: :80 redirect + TLS landing page
+    if let Ok(bind) = args.web_bind.parse::<std::net::SocketAddr>() {
+        let host = args.host.clone();
+        tokio::spawn(async move {
+            if let Err(err) = atmoq::web::serve_redirect(bind, host).await {
+                tracing::warn!(?err, "http redirect server failed");
+            }
+        });
+    }
+    if let Ok(bind) = args.web_tls_bind.parse::<std::net::SocketAddr>() {
+        match (args.server.tls.cert.first(), args.server.tls.key.first()) {
+            (Some(cert), Some(key)) => {
+                let page =
+                    atmoq::web::landing_page(&args.host, &args.broadcast, &args.track);
+                let (cert, key) = (cert.clone(), key.clone());
+                tokio::spawn(async move {
+                    if let Err(err) = atmoq::web::serve_landing(bind, &cert, &key, page).await {
+                        tracing::warn!(?err, "https landing server failed");
+                    }
+                });
+            }
+            _ => tracing::info!(
+                "no --tls-cert/--tls-key; skipping https landing page (dev mode)"
+            ),
+        }
+    }
 
     let mut server = args.server.init()?;
     tracing::info!(broadcast = %args.broadcast, "serving MoQ subscribers");
