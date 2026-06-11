@@ -74,11 +74,19 @@ jobs:
             os: macos-13
           - target: aarch64-apple-darwin
             os: macos-14
+          # Cross-compiled from Linux with mingw rather than built on a
+          # Windows runner: the gnu target needs no NASM/MSVC toolchain and
+          # is what we've verified against a real Windows box.
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            packages: gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      - if: matrix.packages
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

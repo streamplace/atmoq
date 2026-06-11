@@ -49,10 +49,25 @@ jobs:
       - run: cargo test --workspace --locked
 
   build:
-    name: build release
+    name: build release (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+          # Keep the Windows cross-build green between releases; the release
+          # workflow builds the same target for the published binaries.
+          - target: x86_64-pc-windows-gnu
+            packages: gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
     steps:
       - uses: actions/checkout@v4
+      - if: matrix.packages
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --release --locked --bins
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --workspace --release --locked --bins --target ${{ matrix.target }}
