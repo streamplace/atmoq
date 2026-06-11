@@ -69,6 +69,10 @@ struct FirehoseArgs {
     /// Exit after this many milliseconds without an event (0 = never)
     #[arg(long, default_value_t = 0)]
     idle_ms: u64,
+    /// Print individual record operations (decoded from blocks) instead of
+    /// whole events
+    #[arg(long, alias = "records")]
+    ops: bool,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -131,15 +135,14 @@ async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Item>(256);
     if let Some(moq_url) = args.moq_host.clone() {
         if args.dialect == Dialect::Ietf07 {
-            let bind = args.client.bind;
-            let ns = args.broadcast.clone();
-            let track = args.track.clone();
-            tracing::info!(url = %moq_url, namespace = %ns, "consuming from MoQ relay (draft-07)");
-            tokio::spawn(async move {
-                if let Err(err) = dialect07::subscribe(&moq_url, bind, &ns, &track, tx).await {
-                    tracing::error!(?err, "draft-07 subscribe error");
-                }
-            });
+            tracing::info!(url = %moq_url, namespace = %args.broadcast, "consuming from MoQ relay (draft-07)");
+            tokio::spawn(dialect07::subscribe_loop(
+                moq_url,
+                args.client.bind,
+                args.broadcast.clone(),
+                args.track.clone(),
+                tx,
+            ));
         } else {
             let client = args.client.clone().init()?;
             let origin = moq_net::Origin::random().produce();
@@ -272,24 +275,83 @@ async fn print_events(mut rx: mpsc::Receiver<Item>, args: &FirehoseArgs) -> anyh
             }
             last_seq = s;
         }
-        if !args.quiet {
-            let mut line = serde_json::json!({ "t": frame.t, "seq": frame.seq });
-            if let Some(g) = group {
-                line["group"] = g.into();
+        if args.ops {
+            if frame.t.as_deref() == Some("#commit") {
+                match print_ops(&payload, args.quiet) {
+                    Ok(n) => count += n,
+                    Err(err) => tracing::warn!(?err, seq = ?frame.seq, "failed to decode ops"),
+                }
             }
-            if args.raw {
-                line["raw"] = b64.encode(&raw).into();
-            } else {
-                line["header"] = cbor_to_json(&header);
-                line["payload"] = cbor_to_json(&payload);
+        } else {
+            if !args.quiet {
+                let mut line = serde_json::json!({ "t": frame.t, "seq": frame.seq });
+                if let Some(g) = group {
+                    line["group"] = g.into();
+                }
+                if args.raw {
+                    line["raw"] = b64.encode(&raw).into();
+                } else {
+                    line["header"] = cbor_to_json(&header);
+                    line["payload"] = cbor_to_json(&payload);
+                }
+                println!("{line}");
             }
-            println!("{line}");
+            count += 1;
         }
-        count += 1;
         if args.limit > 0 && count >= args.limit {
             return Ok(());
         }
     }
+}
+
+/// goat-style `--ops`: print one line per record operation in a #commit,
+/// with the record decoded from the message's CAR blocks.
+fn print_ops(payload: &ciborium::Value, quiet: bool) -> anyhow::Result<usize> {
+    use anyhow::Context;
+    use atmoq::{car, frame::field, json::cid_string};
+
+    let blocks = field(payload, "blocks")
+        .and_then(|v| v.as_bytes())
+        .context("commit missing blocks")?;
+    let blocks = car::blocks(blocks)?;
+    let ops = field(payload, "ops")
+        .and_then(|v| v.as_array())
+        .context("commit missing ops")?;
+
+    let str_field = |key: &str| field(payload, key).and_then(|v| v.as_text()).map(str::to_owned);
+    let repo = str_field("repo");
+    let rev = str_field("rev");
+    let time = str_field("time");
+    let seq = field(payload, "seq").and_then(|v| v.as_integer()).map(|i| i128::from(i) as i64);
+
+    let mut printed = 0usize;
+    for op in ops {
+        let cid_bytes = field(op, "cid").and_then(|v| match v {
+            ciborium::Value::Tag(42, inner) => inner.as_bytes().cloned(),
+            _ => None,
+        });
+        let cid_bytes = cid_bytes.map(|b| b.strip_prefix(&[0x00]).map(<[u8]>::to_vec).unwrap_or(b));
+        let record = cid_bytes
+            .as_ref()
+            .and_then(|c| blocks.get(c))
+            .and_then(|data| ciborium::de::from_reader::<ciborium::Value, _>(data.as_slice()).ok())
+            .map(|v| cbor_to_json(&v));
+        if !quiet {
+            let line = serde_json::json!({
+                "action": field(op, "action").and_then(|v| v.as_text()),
+                "path": field(op, "path").and_then(|v| v.as_text()),
+                "cid": cid_bytes.as_deref().map(cid_string),
+                "record": record,
+                "seq": seq,
+                "repo": repo,
+                "rev": rev,
+                "time": time,
+            });
+            println!("{line}");
+        }
+        printed += 1;
+    }
+    Ok(printed)
 }
 
 /// Dialect-agnostic frame publisher with internal group rotation.
@@ -299,11 +361,11 @@ enum FramePublisher {
         group: moq_net::GroupProducer,
         count: usize,
     },
-    Ietf07(dialect07::Publisher07),
+    Ietf07(dialect07::ResilientPublisher),
 }
 
 impl FramePublisher {
-    fn write(&mut self, data: Vec<u8>, group_size: usize) -> anyhow::Result<()> {
+    async fn write(&mut self, data: Vec<u8>, group_size: usize) -> anyhow::Result<()> {
         match self {
             FramePublisher::Lite { track, group, count } => {
                 group.write_frame(Bytes::from(data))?;
@@ -316,7 +378,7 @@ impl FramePublisher {
                 }
                 Ok(())
             }
-            FramePublisher::Ietf07(p) => p.write(Bytes::from(data), group_size),
+            FramePublisher::Ietf07(p) => p.write(Bytes::from(data), group_size).await,
         }
     }
 
@@ -357,16 +419,15 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                     Box::new((session, origin, broadcast)),
                 )
             }
-            Dialect::Ietf07 => {
-                let p = dialect07::publish(
-                    &args.moq_host,
+            Dialect::Ietf07 => (
+                FramePublisher::Ietf07(dialect07::ResilientPublisher::new(
+                    args.moq_host.clone(),
                     args.client.bind,
-                    &args.broadcast,
-                    &args.track,
-                )
-                .await?;
-                (FramePublisher::Ietf07(p), Box::new(()))
-            }
+                    args.broadcast.clone(),
+                    args.track.clone(),
+                )),
+                Box::new(()),
+            ),
         };
     tracing::info!(url = %args.moq_host, broadcast = %args.broadcast, "publishing to MoQ relay");
 
@@ -434,7 +495,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             }
             last_seq.store(seq, Ordering::Relaxed);
         }
-        publisher.write(frame.raw, args.group_size)?;
+        publisher.write(frame.raw, args.group_size).await?;
         total += 1;
         if total % 100 == 0 {
             tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");

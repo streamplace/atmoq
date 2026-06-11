@@ -43,17 +43,17 @@ impl Frame {
     pub fn parse(raw: Vec<u8>) -> Result<Frame> {
         let (header, payload) = Frame::decode(&raw)?;
 
-        let op = map_get(&header, "op")
+        let op = field(&header, "op")
             .and_then(Value::as_integer)
             .map(i128::from)
             .context("frame header missing integer 'op'")? as i64;
-        let t = map_get(&header, "t")
+        let t = field(&header, "t")
             .and_then(|v| v.as_text())
             .map(str::to_owned);
         if op == 1 && t.is_none() {
             bail!("op=1 frame missing 't'");
         }
-        let seq = map_get(&payload, "seq")
+        let seq = field(&payload, "seq")
             .and_then(Value::as_integer)
             .map(|i| i128::from(i) as i64);
 
@@ -61,7 +61,7 @@ impl Frame {
     }
 }
 
-fn map_get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+pub fn field<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     v.as_map()?
         .iter()
         .find(|(k, _)| k.as_text() == Some(key))

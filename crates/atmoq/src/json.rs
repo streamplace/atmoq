@@ -47,7 +47,7 @@ pub fn cbor_to_json(v: &Value) -> serde_json::Value {
 }
 
 /// CBOR-tag-42 byte string (0x00 + 36-byte CID) to canonical string form.
-fn cid_string(bytes: &[u8]) -> String {
+pub fn cid_string(bytes: &[u8]) -> String {
     let cid = bytes.strip_prefix(&[0x00]).unwrap_or(bytes);
     format!(
         "b{}",

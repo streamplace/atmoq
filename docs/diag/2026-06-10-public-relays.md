@@ -47,10 +47,23 @@ moq-net 0.1.10 / moq-native 0.17.0.
   Cargo.toml) behind the same publish/consume seam as moq-net. Verified
   live: bsky.network → atmoq → relay.cloudflare.mediaoverquic.com → atmoq
   firehose, **240 overlapping mainnet frames byte-identical** vs a direct
-  WS capture. v1 limitations vs the lite dialect: no session auto-reconnect
-  and no resubscribe-on-churn (process exits on session error; cursor state
-  makes restart lossless). Drop the dialect when Cloudflare deploys
-  draft-14 — moq-net should then connect as-is (offers Draft14+).
+  WS capture. Drop the dialect when Cloudflare deploys draft-14 — moq-net
+  should then connect as-is (offers Draft14+).
+- **Cloudflare session behavior (2026-06-11)**: the relay closes *whole
+  sessions* rather than failing individual subscribes — `Closed(404)` when
+  no publisher has announced the namespace, `Closed(0)` when the publisher
+  goes away mid-subscription. Both now handled by reconnect loops on both
+  sides of the 07 dialect (verified: 2,485 live frames across a publisher
+  kill/restart, seq strictly increasing, 5 reconnects absorbed).
+- **`wrong size` on reused namespaces (2026-06-11)**: Cloudflare caches
+  groups per namespace, and namespaces outlive sessions (no auth). A
+  restarted publisher that restarts group IDs at 0 collides with the
+  previous run's cached groups, and subscribers read a stale/live mix ->
+  `wrong size` / garbage frames. Fixed by seeding each session's group IDs
+  from epoch millis so they never collide across restarts. The deeper issue
+  is inherent to a zero-auth relay: *anyone* can publish into your
+  namespace (including a second copy of your own relay) — unguessable
+  scopes, and eventually consumer-side validation (M2), are the defenses.
 
 ## Scorecard
 
@@ -61,5 +74,5 @@ moq-net 0.1.10 / moq-native 0.17.0.
 | Session establish | ✅ | ✅ (draft-07 dialect; draft-14 rejected, incl. CF's own client) |
 | Publish / subscribe | ✅ | ✅ |
 | Byte-exact passthrough | ✅ (62 live frames) | ✅ (240 live frames) |
-| Churn resilience | ✅ resubscribe + dedupe | ➖ v1: exit on session error, lossless restart via cursor |
+| Churn resilience | ✅ resubscribe + dedupe | ✅ reconnect loops both sides + dedupe |
 | Auth model | `/anon` prefix, JWT otherwise | none (unguessable names) |
