@@ -147,7 +147,17 @@ impl ResilientPublisher {
                 }
                 match publish(&self.url, self.bind, &self.namespace, &self.track).await {
                     Ok(p) => {
-                        tracing::info!("draft-07 session (re)established");
+                        // Probation: an ANNOUNCE rejection (e.g. namespace
+                        // already claimed by another publisher) lands a few
+                        // hundred ms after connect. Writing before then
+                        // silently loses frames into a doomed session.
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if p.is_dead() {
+                            tracing::warn!("draft-07 announce rejected (namespace claimed?); retrying");
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            continue;
+                        }
+                        tracing::info!("draft-07 session established");
                         self.inner = Some(p);
                     }
                     Err(err) => {

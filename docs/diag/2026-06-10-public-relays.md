@@ -65,6 +65,18 @@ moq-net 0.1.10 / moq-native 0.17.0.
   namespace (including a second copy of your own relay) — unguessable
   scopes, and eventually consumer-side validation (M2), are the defenses.
 
+- **Single publisher per namespace (2026-06-11)**: Cloudflare enforces
+  first-come-first-served — a second publisher's ANNOUNCE on a claimed
+  namespace gets `Closed(0)` immediately; the holder is unaffected. Not
+  auth (anyone can claim a *free* namespace), but it does prevent the
+  two-publisher corruption mode. Claim release: instant on clean exit,
+  **~16s after unclean death** (QUIC idle timeout) — so a supervisor
+  restart or a hot-standby second relay takes over within ~16s. atmoq's
+  publisher waits out a 500ms post-connect probation so an about-to-be-
+  rejected session can't silently swallow frames, then retries every 2s —
+  i.e. running two `atmoq relay`s on one namespace is now a working
+  primary/standby pair, not an error.
+
 ## Scorecard
 
 | Capability | cdn.moq.dev (`--dialect lite`) | Cloudflare (`--dialect ietf-07`) |
