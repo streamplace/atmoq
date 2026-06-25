@@ -6,7 +6,7 @@
 //! MoQ relay (--moq-host) as the source. `atmoq relay` is the bridge:
 //! it consumes a WebSocket firehose and republishes it over MoQ.
 
-use atmoq::{dialect07, frame::Frame, ingest, json::cbor_to_json};
+use atmoq::{dialect07, frame::Frame, ingest, json::cbor_to_json, store::GroupStore};
 use base64::Engine;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
@@ -117,6 +117,11 @@ struct RelayArgs {
     /// monotonic across restarts (keeps consumer group cursors valid)
     #[arg(long)]
     group_seq_file: Option<std::path::PathBuf>,
+    /// Disk store directory for the replay window: groups are persisted here and
+    /// reloaded on restart so a relay restart doesn't drop the window. Also
+    /// supplies the durable group-sequence seed (supersedes --group-seq-file).
+    #[arg(long)]
+    group_store_dir: Option<std::path::PathBuf>,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -164,6 +169,11 @@ struct ServeArgs {
     /// monotonic across restarts (keeps consumer group cursors valid)
     #[arg(long)]
     group_seq_file: Option<std::path::PathBuf>,
+    /// Disk store directory for the replay window: groups are persisted here and
+    /// reloaded on restart so a relay restart doesn't drop the window. Also
+    /// supplies the durable group-sequence seed (supersedes --group-seq-file).
+    #[arg(long)]
+    group_store_dir: Option<std::path::PathBuf>,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -471,6 +481,77 @@ fn make_first_group(
     Ok(group)
 }
 
+/// Milliseconds since the unix epoch (wall clock), for group timestamps + GC.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Repopulate the live track from disk on startup so a relay restart doesn't
+/// drop the in-RAM replay window: every stored group newer than the window is
+/// re-created (with its original sequence) into the track. Reloaded groups get a
+/// fresh cache timestamp, so they live for another full window. No-op without a
+/// finite window.
+fn reload_window(
+    track: &mut moq_net::TrackProducer,
+    store: &GroupStore,
+    window_secs: u64,
+) -> anyhow::Result<()> {
+    if window_secs == 0 {
+        return Ok(());
+    }
+    let cutoff = now_ms().saturating_sub(window_secs * 1000);
+    let mut reloaded = 0u64;
+    for seq in store.groups_since(cutoff)? {
+        if let Some(frames) = store.read(seq)? {
+            let mut g = track.create_group(moq_net::Group { sequence: seq })?;
+            for f in frames {
+                g.write_frame(f)?;
+            }
+            g.finish()?;
+            reloaded += 1;
+        }
+    }
+    if reloaded > 0 {
+        tracing::info!(reloaded, "reloaded replay window from disk");
+    }
+    Ok(())
+}
+
+/// Build a Lite publisher: open the optional disk store, reload the in-window
+/// groups into the track (restart-survivable replay), seed the high-water group
+/// sequence (store wins over the lightweight seq file), and create the first
+/// live group. Shared by `serve` and `relay`.
+fn build_lite_publisher(
+    mut track: moq_net::TrackProducer,
+    group_seq_file: Option<std::path::PathBuf>,
+    group_store_dir: &Option<std::path::PathBuf>,
+    window_secs: u64,
+) -> anyhow::Result<FramePublisher> {
+    let store = match group_store_dir {
+        Some(dir) => Some(Box::new(GroupStore::open(dir)?)),
+        None => None,
+    };
+    if let Some(s) = &store {
+        reload_window(&mut track, s, window_secs)?;
+    }
+    let seed = store
+        .as_ref()
+        .and_then(|s| s.max_seq())
+        .or_else(|| load_group_seq(&group_seq_file));
+    let group = make_first_group(&mut track, seed, &group_seq_file)?;
+    Ok(FramePublisher::Lite {
+        track,
+        group,
+        count: 0,
+        group_seq_file,
+        store,
+        group_frames: Vec::new(),
+    })
+}
+
 /// Dialect-agnostic frame publisher with internal group rotation.
 enum FramePublisher {
     Lite {
@@ -480,6 +561,12 @@ enum FramePublisher {
         /// Where to persist the high-water group sequence so ids stay monotonic
         /// across restarts (None = ephemeral, restarts at 0).
         group_seq_file: Option<std::path::PathBuf>,
+        /// Disk store for restart-survivable replay (None = RAM only). Boxed to
+        /// keep this hot variant small (touched per-rotation, not per-frame).
+        store: Option<Box<GroupStore>>,
+        /// Frames of the current (not-yet-finished) group, buffered so the
+        /// completed group can be appended to `store` on rotation.
+        group_frames: Vec<Bytes>,
     },
     Ietf07(Box<dialect07::ResilientPublisher>),
 }
@@ -492,13 +579,27 @@ impl FramePublisher {
                 group,
                 count,
                 group_seq_file,
+                store,
+                group_frames,
             } => {
-                group.write_frame(Bytes::from(data))?;
+                let b = Bytes::from(data);
+                group.write_frame(b.clone())?;
+                if store.is_some() {
+                    group_frames.push(b);
+                }
                 *count += 1;
                 if *count >= group_size {
+                    let finished_seq = group.sequence;
                     let mut old = std::mem::replace(group, track.append_group()?);
                     old.finish()?;
                     *count = 0;
+                    // Persist the completed group to disk before recording the
+                    // new sequence, so the store never advertises a group it
+                    // hasn't durably stored.
+                    if let Some(store) = store {
+                        store.append(finished_seq, now_ms(), group_frames)?;
+                        group_frames.clear();
+                    }
                     // Persist on creation (not finish): a consumer only resumes
                     // from a group it actually received, and seeding from
                     // persisted+1 guarantees we never reuse a sequence for
@@ -509,6 +610,22 @@ impl FramePublisher {
                 Ok(())
             }
             FramePublisher::Ietf07(p) => p.write(Bytes::from(data), group_size).await,
+        }
+    }
+
+    /// Drop stored groups older than the replay window (best-effort).
+    fn gc(&mut self, window_secs: u64) {
+        if let FramePublisher::Lite {
+            store: Some(store), ..
+        } = self
+        {
+            if window_secs == 0 {
+                return;
+            }
+            let cutoff = now_ms().saturating_sub(window_secs * 1000);
+            if let Err(err) = store.gc(cutoff) {
+                tracing::warn!(?err, "group store gc failed");
+            }
         }
     }
 
@@ -547,17 +664,13 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             let session = client
                 .with_publish(origin.consume())
                 .reconnect(args.moq_host.clone());
-            let seed = load_group_seq(&args.group_seq_file);
-            let group = make_first_group(&mut track, seed, &args.group_seq_file)?;
-            (
-                FramePublisher::Lite {
-                    track,
-                    group,
-                    count: 0,
-                    group_seq_file: args.group_seq_file.clone(),
-                },
-                Box::new((session, origin, broadcast)),
-            )
+            let publisher = build_lite_publisher(
+                track,
+                args.group_seq_file.clone(),
+                &args.group_store_dir,
+                args.replay_window_secs,
+            )?;
+            (publisher, Box::new((session, origin, broadcast)))
         }
         Dialect::Ietf07 => (
             FramePublisher::Ietf07(Box::new(dialect07::ResilientPublisher::new(
@@ -573,7 +686,15 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
-    pump(rx, publisher, args.group_size, args.cursor_file, last_seq).await
+    pump(
+        rx,
+        publisher,
+        args.group_size,
+        args.replay_window_secs,
+        args.cursor_file,
+        last_seq,
+    )
+    .await
 }
 
 /// Serve MoQ subscribers directly from this process: the firehose broadcast
@@ -589,14 +710,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     })?;
     apply_replay_window(&mut track, args.replay_window_secs)?;
     origin.publish_broadcast(&args.broadcast, broadcast.consume());
-    let seed = load_group_seq(&args.group_seq_file);
-    let group = make_first_group(&mut track, seed, &args.group_seq_file)?;
-    let publisher = FramePublisher::Lite {
+    let publisher = build_lite_publisher(
         track,
-        group,
-        count: 0,
-        group_seq_file: args.group_seq_file.clone(),
-    };
+        args.group_seq_file.clone(),
+        &args.group_store_dir,
+        args.replay_window_secs,
+    )?;
 
     // human-facing web frontend: :80 redirect + TLS landing page
     if let Ok(bind) = args.web_bind.parse::<std::net::SocketAddr>() {
@@ -644,7 +763,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
-    let result = pump(rx, publisher, args.group_size, args.cursor_file, last_seq).await;
+    let result = pump(
+        rx,
+        publisher,
+        args.group_size,
+        args.replay_window_secs,
+        args.cursor_file,
+        last_seq,
+    )
+    .await;
     drop(broadcast);
     result
 }
@@ -707,17 +834,25 @@ async fn pump(
     mut rx: mpsc::Receiver<Frame>,
     mut publisher: FramePublisher,
     group_size: usize,
+    window_secs: u64,
     cursor_file: Option<std::path::PathBuf>,
     last_seq: SharedSeq,
 ) -> anyhow::Result<()> {
     let mut total = 0u64;
     let mut cursor_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     cursor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // GC the disk store on a slower cadence than cursor flushes.
+    let mut gc_tick = tokio::time::interval(std::time::Duration::from_secs(30));
+    gc_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let frame = tokio::select! {
             f = rx.recv() => f,
             _ = cursor_tick.tick() => {
                 persist_cursor(&cursor_file, &last_seq);
+                continue;
+            }
+            _ = gc_tick.tick() => {
+                publisher.gc(window_secs);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
