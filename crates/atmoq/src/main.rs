@@ -113,6 +113,10 @@ struct RelayArgs {
     /// Persist the upstream cursor here; resume from it on restart
     #[arg(long)]
     cursor_file: Option<std::path::PathBuf>,
+    /// Persist the high-water MoQ group sequence here so group ids stay
+    /// monotonic across restarts (keeps consumer group cursors valid)
+    #[arg(long)]
+    group_seq_file: Option<std::path::PathBuf>,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -156,6 +160,10 @@ struct ServeArgs {
     /// Persist the upstream cursor here; resume from it on restart
     #[arg(long)]
     cursor_file: Option<std::path::PathBuf>,
+    /// Persist the high-water MoQ group sequence here so group ids stay
+    /// monotonic across restarts (keeps consumer group cursors valid)
+    #[arg(long)]
+    group_seq_file: Option<std::path::PathBuf>,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -423,12 +431,55 @@ fn apply_replay_window(track: &mut moq_net::TrackProducer, secs: u64) -> anyhow:
     Ok(())
 }
 
+/// Load the persisted high-water MoQ group sequence, if any. Used to keep group
+/// ids monotonic across a relay restart so a consumer's group cursor stays valid
+/// (prerequisite for any disk-backed replay store).
+fn load_group_seq(path: &Option<std::path::PathBuf>) -> Option<u64> {
+    let path = path.as_ref()?;
+    let seq = std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    tracing::info!(group_seq = seq, path = %path.display(), "resuming group sequence");
+    Some(seq)
+}
+
+/// Persist the high-water group sequence (best-effort, no fsync — mirrors the
+/// cursor file). Called on each group creation.
+fn persist_group_seq(path: &Option<std::path::PathBuf>, seq: u64) {
+    let Some(path) = path else { return };
+    if let Err(err) = std::fs::write(path, format!("{seq}\n")) {
+        tracing::warn!(?err, path = %path.display(), "failed to persist group sequence");
+    }
+}
+
+/// Create the first group of a run. With a persisted seed we continue at
+/// `seed + 1` (via an explicit sequence) so ids never go backwards across a
+/// restart; otherwise moq-net's default starts at 0. The chosen sequence is
+/// persisted immediately.
+fn make_first_group(
+    track: &mut moq_net::TrackProducer,
+    seed: Option<u64>,
+    group_seq_file: &Option<std::path::PathBuf>,
+) -> anyhow::Result<moq_net::GroupProducer> {
+    let group = match seed {
+        Some(prev) => track.create_group(moq_net::Group { sequence: prev + 1 })?,
+        None => track.append_group()?,
+    };
+    persist_group_seq(group_seq_file, group.sequence);
+    Ok(group)
+}
+
 /// Dialect-agnostic frame publisher with internal group rotation.
 enum FramePublisher {
     Lite {
         track: moq_net::TrackProducer,
         group: moq_net::GroupProducer,
         count: usize,
+        /// Where to persist the high-water group sequence so ids stay monotonic
+        /// across restarts (None = ephemeral, restarts at 0).
+        group_seq_file: Option<std::path::PathBuf>,
     },
     Ietf07(Box<dialect07::ResilientPublisher>),
 }
@@ -440,6 +491,7 @@ impl FramePublisher {
                 track,
                 group,
                 count,
+                group_seq_file,
             } => {
                 group.write_frame(Bytes::from(data))?;
                 *count += 1;
@@ -447,6 +499,11 @@ impl FramePublisher {
                     let mut old = std::mem::replace(group, track.append_group()?);
                     old.finish()?;
                     *count = 0;
+                    // Persist on creation (not finish): a consumer only resumes
+                    // from a group it actually received, and seeding from
+                    // persisted+1 guarantees we never reuse a sequence for
+                    // different content across a restart.
+                    persist_group_seq(group_seq_file, group.sequence);
                     tracing::debug!(sequence = group.sequence, "rotated group");
                 }
                 Ok(())
@@ -490,12 +547,14 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             let session = client
                 .with_publish(origin.consume())
                 .reconnect(args.moq_host.clone());
-            let group = track.append_group()?;
+            let seed = load_group_seq(&args.group_seq_file);
+            let group = make_first_group(&mut track, seed, &args.group_seq_file)?;
             (
                 FramePublisher::Lite {
                     track,
                     group,
                     count: 0,
+                    group_seq_file: args.group_seq_file.clone(),
                 },
                 Box::new((session, origin, broadcast)),
             )
@@ -530,11 +589,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     })?;
     apply_replay_window(&mut track, args.replay_window_secs)?;
     origin.publish_broadcast(&args.broadcast, broadcast.consume());
-    let group = track.append_group()?;
+    let seed = load_group_seq(&args.group_seq_file);
+    let group = make_first_group(&mut track, seed, &args.group_seq_file)?;
     let publisher = FramePublisher::Lite {
         track,
         group,
         count: 0,
+        group_seq_file: args.group_seq_file.clone(),
     };
 
     // human-facing web frontend: :80 redirect + TLS landing page
@@ -692,5 +753,32 @@ fn persist_cursor(path: &Option<std::path::PathBuf>, last_seq: &std::sync::atomi
     }
     if let Err(err) = std::fs::write(path, format!("{seq}\n")) {
         tracing::warn!(?err, path = %path.display(), "failed to persist cursor");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_seq_persist_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("atmoq-gseq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = Some(dir.join("gseq.txt"));
+
+        // No file yet -> no seed (fresh start at 0).
+        assert_eq!(load_group_seq(&path), None);
+
+        // Persist then load round-trips, and trailing newline/whitespace is fine.
+        persist_group_seq(&path, 1234);
+        assert_eq!(load_group_seq(&path), Some(1234));
+        persist_group_seq(&path, 2_000_000);
+        assert_eq!(load_group_seq(&path), Some(2_000_000));
+
+        // None path is a no-op (never panics, never reads).
+        persist_group_seq(&None, 5);
+        assert_eq!(load_group_seq(&None), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
