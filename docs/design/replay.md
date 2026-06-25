@@ -57,25 +57,53 @@ to a current-main build and the e2e above passes. Follow-up (minor, separate fro
 replay): atmoq-go's `Insecure`/self-signed path doesn't work for an IP / hostname
 mismatch — fine for prod (real certs), worth fixing for local dev.
 
-## Phase 2 — "hours/days, on disk" (design)
+## Phase 2 — on disk (implemented through Tier A)
 
-Needed for real indigo parity; the substantive work.
+- **Durable, monotonic group IDs across restart — DONE.** `--group-seq-file`
+  persists the high-water group seq; the first group after restart is seeded at
+  `seed + 1` via `create_group(Group{ sequence })`. Persisted on creation so a
+  sequence is never reused for different content. Verified: a run ending at group
+  940 continued at 1369 (not 0) after restart.
+- **Disk-backed, group-aligned segment store — DONE** (`src/store.rs`).
+  Append-only segment files keyed by group seq, index rebuilt on open, whole-
+  segment age GC (active segment kept), torn-tail tolerance, max-seq recovery.
+  Unit-tested (roundtrip+reopen, GC, time filter).
+- **Tier A — restart-survivable replay window — DONE.** `--group-store-dir`:
+  each completed group is appended to disk; on startup the in-window groups are
+  reloaded into the live track (original sequences, fresh cache timestamps), so a
+  relay restart no longer drops the window. GC on a 30s timer. The store also
+  supplies the durable seed. Verified end-to-end: consumer noted group 416,
+  relay was fully restarted, run 2 logged `reloaded ... reloaded=1011`, and
+  `SubscribeFrom(416)` returned group 416 — a window Phase 1 lost on restart.
+  Bounded by RAM (the reloaded window lives in the track), so this reaches
+  minutes, not 72h.
 
-- **Durable, monotonic group IDs across restart.** Persist the high-water group
-  seq (extend the cursor-file mechanism) and seed the first group via
-  `create_group(Group{ sequence })` (moq-net already supports an explicit
-  sequence) instead of `append_group()`. Prereq for any cross-restart group
-  cursor. Cheap; no fork.
-- **Disk-backed, group-aligned segment log + age GC** (mirrors indigo's
-  diskpersist: log files + a small index, delete refs older than retention).
-- **Replay-publisher seam** — the hard part. moq-net's `Track` is a shared
-  in-RAM fan-out cache that evicts on age; you can't serve deep history from it
-  (wrong memory profile, shared across subscribers). Options:
-  1. extend moq-net with a pluggable/disk-backed group source (best; coordinate
-     with kixelated alongside the retention patch), or
-  2. a custom lite publisher path that owns the disk log and seams disk→live per
-     subscription.
-  Scope this with a spike before committing; it gates Phase 2.
+### Tier B — deep, disk-served window (beyond RAM) — remaining, needs moq-net
+
+For hours/days without holding the window in RAM, the publisher must serve old
+groups straight from disk on a `SUBSCRIBE(start_group=G)` rather than reloading
+them into the track. moq-net's `Track` is a shared in-RAM fan-out cache that
+evicts on age, so this needs a moq-net hook. Proposed API (coordinate with
+kixelated, alongside the `set_max_group_age` patch):
+
+```rust
+/// A fallback source of historical groups, consulted when a requested group is
+/// no longer in the in-RAM cache.
+pub trait GroupSource: Send + Sync {
+    fn group(&self, seq: u64) -> Option<Vec<Bytes>>; // None = not stored
+    fn oldest(&self) -> Option<u64>;
+}
+impl TrackProducer { pub fn set_group_source(&mut self, src: Arc<dyn GroupSource>); }
+```
+
+Integration point is the publisher's per-subscription `run_track`
+(`lite/publisher.rs`): before `track.start_at(start_group)` serves from RAM,
+serve `[max(start_group, source.oldest()) .. oldest_in_ram)` from the source as
+ordinary group streams, then continue live. atmoq implements `GroupSource` over
+`store::GroupStore` (read-by-seq already exists). The disk read is async vs
+`poll_recv_group`'s sync `Poll`, so the cleanest seam is in `run_track` (its own
+async task) rather than inside the shared `TrackConsumer` poll. Scope with a
+spike before committing.
 
 ## Phase 3 — interop + deep tail
 
