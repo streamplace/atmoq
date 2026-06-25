@@ -1370,8 +1370,6 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fe9e894d74a6345c63d320779ffd7611dd17b94e99fb6041f585af3b57ec13c"
 dependencies = [
  "bytes",
  "futures",

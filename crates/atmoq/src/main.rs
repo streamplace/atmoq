@@ -101,6 +101,12 @@ struct RelayArgs {
     /// Frames per MoQ group (late-join replay depth / drop granularity)
     #[arg(long, default_value_t = 64)]
     group_size: usize,
+    /// Replay window in seconds: how long past groups are retained for
+    /// late-joining/resuming subscribers. moq-net's hardcoded default is 5s; we
+    /// hold groups in RAM, so this trades memory for resume depth. 0 keeps the
+    /// moq-net default.
+    #[arg(long, default_value_t = 60)]
+    replay_window_secs: u64,
     /// Upstream cursor to resume from (overridden by --cursor-file if present)
     #[arg(long)]
     cursor: Option<i64>,
@@ -138,6 +144,12 @@ struct ServeArgs {
     /// Frames per MoQ group (late-join replay depth)
     #[arg(long, default_value_t = 64)]
     group_size: usize,
+    /// Replay window in seconds: how long past groups are retained for
+    /// late-joining/resuming subscribers. moq-net's hardcoded default is 5s; we
+    /// hold groups in RAM, so this trades memory for resume depth. 0 keeps the
+    /// moq-net default.
+    #[arg(long, default_value_t = 60)]
+    replay_window_secs: u64,
     /// Upstream cursor to resume from (overridden by --cursor-file if present)
     #[arg(long)]
     cursor: Option<i64>,
@@ -399,6 +411,18 @@ fn print_ops(payload: &ciborium::Value, quiet: bool) -> anyhow::Result<usize> {
     Ok(printed)
 }
 
+/// Extend the relay's late-join/resume window past moq-net's hardcoded 5s by
+/// retaining groups in the track cache for `secs` (0 keeps the moq-net default).
+/// Groups live in RAM, so the window is a memory-vs-depth tradeoff; deeper
+/// backfill is a PDS re-sync, not transport replay.
+fn apply_replay_window(track: &mut moq_net::TrackProducer, secs: u64) -> anyhow::Result<()> {
+    if secs > 0 {
+        track.set_max_group_age(std::time::Duration::from_secs(secs))?;
+        tracing::info!(replay_window_secs = secs, "replay window set");
+    }
+    Ok(())
+}
+
 /// Dialect-agnostic frame publisher with internal group rotation.
 enum FramePublisher {
     Lite {
@@ -460,6 +484,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 name: args.track.clone(),
                 priority: 0,
             })?;
+            apply_replay_window(&mut track, args.replay_window_secs)?;
             origin.publish_broadcast(&args.broadcast, broadcast.consume());
             // auto-reconnecting session: publishing resumes after drops
             let session = client
@@ -503,6 +528,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         name: args.track.clone(),
         priority: 0,
     })?;
+    apply_replay_window(&mut track, args.replay_window_secs)?;
     origin.publish_broadcast(&args.broadcast, broadcast.consume());
     let group = track.append_group()?;
     let publisher = FramePublisher::Lite {

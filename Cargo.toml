@@ -28,3 +28,12 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
+
+# TEMPORARY local patch (do not release with this): adds
+# TrackProducer::set_max_group_age so atmoq can offer a replay window deeper than
+# moq-net's hardcoded 5s MAX_GROUP_AGE (see --replay-window). The change is
+# additive and meant to go upstream — moq-net already has a "configurable cache
+# size" TODO at that const — after which this patch is dropped and we pin a
+# released moq-net.
+[patch.crates-io]
+moq-net = { path = "../moq-net" }
