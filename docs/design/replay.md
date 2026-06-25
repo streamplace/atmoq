@@ -37,43 +37,25 @@ oldest retained group ≥ G, leaving a gap the consumer must repair via PDS re-s
 
 ### Validation done
 - moq-net retention override: unit test passes.
-- `atmoq serve --replay-window-secs 60` runs; moq-net's own Rust client streams
-  from it.
 - atmoq-go `SubscribeFrom` wire encoding: unit test passes.
 - streamplace builds + moq/dedup tests pass against the local atmoq-go.
+- **Full end-to-end (atmoq-go ↔ a current-main `atmoq serve` build with
+  `--replay-window-secs 60`):** tail the live edge and record group G=2786; wait
+  6s (past the old 5s window); then `SubscribeFrom(2786)` returns first group
+  **2786** while a concurrent fresh live `Subscribe` returns **2940** — i.e. the
+  resume replayed ~154 groups (~2,400 frames) the default 5s window would have
+  dropped. Run: `serve --tls-cert … --tls-key … --server-bind 0.0.0.0:4443
+  --replay-window-secs 60`, consumer dials `moqt://<real-dns-host>:4443`.
 
-End-to-end (atmoq-go consumer ↔ locally-built atmoq serve) is **blocked** by the
-version-drift issue below, not by the replay code.
-
-## ⚠️ Prerequisite blocker: moq-net/moq-native version drift
-
-A consumer using **atmoq-go** cannot establish a session with a relay built from
-current atmoq `main` (moq-net 0.1.10 / moq-native 0.17), though it works fine
-against the **deployed** streamplace.network relay.
-
-Evidence:
-- atmoq-go plain `Subscribe` (bytes unchanged by replay work) works vs
-  streamplace.network, fails vs a fresh local `atmoq serve` build.
-- moq-net's own Rust client works vs the same local build (server is fine).
-- Server-side trace shows the relay never surfaces atmoq-go's session at all
-  (no "subscriber connected"); the QUIC/ALPN handshake (`moq-lite-04`) succeeds,
-  but the raw-QUIC moq-lite **session** is never accepted, so nothing reads the
-  SUBSCRIBE stream and it resets with code 0.
-- `Cargo.lock` history shows moq-net drifting 0.1.5 → 0.1.9 → 0.1.10; atmoq-go was
-  reverse-engineered against the line the deployed relay runs.
-
-Root cause: a moq-native/moq-net change to raw-QUIC **session establishment**
-(atmoq-go speaks moq-lite directly over raw QUIC — no WebTransport/h3). This is
-exactly the "kixelated iterates fast; pin per release" risk in decision 0001.
-
-Decision needed (Eli): standardize on a version line —
-1. Pin atmoq to the moq-net/moq-native the deployed relay + atmoq-go already
-   speak, and apply the retention patch there; or
-2. Update atmoq-go to current moq-net/moq-native session establishment
-   (re-reverse-engineer the raw-QUIC handshake, or adopt whatever it now requires).
-
-Until resolved, deploying a relay from current `main` would break streamplace's
-moqt firehose path. Replay can't be e2e-demoed locally through atmoq-go either.
+### Non-issue (earlier misdiagnosis): real TLS required, not version drift
+An earlier draft of this doc claimed a moq-net/moq-native "version-drift blocker"
+stopped atmoq-go from connecting to a current-main build. **That was wrong.** The
+failure was entirely the dev TLS path: `serve --tls-generate localhost` + a
+consumer dialing `moqt://127.0.0.1:4443` with `Options{Insecure:true}` (cert host
+≠ dialed IP). With a real cert + matching DNS (no `Insecure`), atmoq-go connects
+to a current-main build and the e2e above passes. Follow-up (minor, separate from
+replay): atmoq-go's `Insecure`/self-signed path doesn't work for an IP / hostname
+mismatch — fine for prod (real certs), worth fixing for local dev.
 
 ## Phase 2 — "hours/days, on disk" (design)
 
