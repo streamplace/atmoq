@@ -11,7 +11,31 @@ use base64::Engine;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+
+/// Adapts the disk-backed [`GroupStore`] to moq-net's [`moq_net::GroupSource`]
+/// so the lite publisher can serve a deep (disk-served) replay window for
+/// subscribers resuming from a group that's already aged out of the RAM cache.
+/// Shares the same store the pump writes to (`Arc<Mutex<..>>`); reads only take
+/// the lock for the brief synchronous seek+read, never across an await.
+struct StoreSource(Arc<Mutex<GroupStore>>);
+
+impl moq_net::GroupSource for StoreSource {
+    fn group(&self, sequence: u64) -> Option<Vec<Bytes>> {
+        match self.0.lock().unwrap().read(sequence) {
+            Ok(frames) => frames,
+            Err(err) => {
+                tracing::warn!(?err, sequence, "group source read failed");
+                None
+            }
+        }
+    }
+
+    fn oldest(&self) -> Option<u64> {
+        self.0.lock().unwrap().oldest_seq()
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "atmoq", version, about)]
@@ -101,10 +125,11 @@ struct RelayArgs {
     /// Frames per MoQ group (late-join replay depth / drop granularity)
     #[arg(long, default_value_t = 64)]
     group_size: usize,
-    /// Replay window in seconds: how long past groups are retained for
-    /// late-joining/resuming subscribers. moq-net's hardcoded default is 5s; we
-    /// hold groups in RAM, so this trades memory for resume depth. 0 keeps the
-    /// moq-net default.
+    /// In-RAM replay window in seconds: the fast path for resuming subscribers
+    /// near the live edge, held in memory. Deeper resumes are served from disk
+    /// (see --backfill-window-secs / --group-store-dir), so this stays small.
+    /// moq-net's hardcoded default is 5s; 0 keeps it. This trades memory for the
+    /// depth served without a disk read.
     #[arg(long, default_value_t = 60)]
     replay_window_secs: u64,
     /// Upstream cursor to resume from (overridden by --cursor-file if present)
@@ -118,10 +143,19 @@ struct RelayArgs {
     #[arg(long)]
     group_seq_file: Option<std::path::PathBuf>,
     /// Disk store directory for the replay window: groups are persisted here and
-    /// reloaded on restart so a relay restart doesn't drop the window. Also
-    /// supplies the durable group-sequence seed (supersedes --group-seq-file).
-    #[arg(long)]
-    group_store_dir: Option<std::path::PathBuf>,
+    /// served from disk for deep resumes, reloaded on restart so a restart
+    /// doesn't drop the window, and used as the durable group-sequence seed
+    /// (supersedes --group-seq-file). On by default, mirroring indigo's relay
+    /// --persist-dir (data/relay/persist).
+    #[arg(long, default_value = "data/atmoq/store")]
+    group_store_dir: std::path::PathBuf,
+    /// Deep replay window in seconds: how long groups are kept on disk and
+    /// served straight from disk to subscribers resuming from behind the RAM
+    /// window (requires --group-store-dir). Defaults to 259200 (72h), matching
+    /// indigo's relay replay window; the firehose held this long is reachable on
+    /// resume without holding it all in RAM.
+    #[arg(long, default_value_t = 259200)]
+    backfill_window_secs: u64,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -153,10 +187,11 @@ struct ServeArgs {
     /// Frames per MoQ group (late-join replay depth)
     #[arg(long, default_value_t = 64)]
     group_size: usize,
-    /// Replay window in seconds: how long past groups are retained for
-    /// late-joining/resuming subscribers. moq-net's hardcoded default is 5s; we
-    /// hold groups in RAM, so this trades memory for resume depth. 0 keeps the
-    /// moq-net default.
+    /// In-RAM replay window in seconds: the fast path for resuming subscribers
+    /// near the live edge, held in memory. Deeper resumes are served from disk
+    /// (see --backfill-window-secs / --group-store-dir), so this stays small.
+    /// moq-net's hardcoded default is 5s; 0 keeps it. This trades memory for the
+    /// depth served without a disk read.
     #[arg(long, default_value_t = 60)]
     replay_window_secs: u64,
     /// Upstream cursor to resume from (overridden by --cursor-file if present)
@@ -170,10 +205,19 @@ struct ServeArgs {
     #[arg(long)]
     group_seq_file: Option<std::path::PathBuf>,
     /// Disk store directory for the replay window: groups are persisted here and
-    /// reloaded on restart so a relay restart doesn't drop the window. Also
-    /// supplies the durable group-sequence seed (supersedes --group-seq-file).
-    #[arg(long)]
-    group_store_dir: Option<std::path::PathBuf>,
+    /// served from disk for deep resumes, reloaded on restart so a restart
+    /// doesn't drop the window, and used as the durable group-sequence seed
+    /// (supersedes --group-seq-file). On by default, mirroring indigo's relay
+    /// --persist-dir (data/relay/persist).
+    #[arg(long, default_value = "data/atmoq/store")]
+    group_store_dir: std::path::PathBuf,
+    /// Deep replay window in seconds: how long groups are kept on disk and
+    /// served straight from disk to subscribers resuming from behind the RAM
+    /// window (requires --group-store-dir). Defaults to 259200 (72h), matching
+    /// indigo's relay replay window; the firehose held this long is reachable on
+    /// resume without holding it all in RAM.
+    #[arg(long, default_value_t = 259200)]
+    backfill_window_secs: u64,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -527,19 +571,23 @@ fn reload_window(
 fn build_lite_publisher(
     mut track: moq_net::TrackProducer,
     group_seq_file: Option<std::path::PathBuf>,
-    group_store_dir: &Option<std::path::PathBuf>,
+    group_store_dir: &std::path::Path,
     window_secs: u64,
 ) -> anyhow::Result<FramePublisher> {
-    let store = match group_store_dir {
-        Some(dir) => Some(Box::new(GroupStore::open(dir)?)),
-        None => None,
-    };
+    // The disk store is always on for Lite serve/relay (mirrors indigo's
+    // always-persisting relay); the directory has a default.
+    let store = Some(Arc::new(Mutex::new(GroupStore::open(group_store_dir)?)));
     if let Some(s) = &store {
-        reload_window(&mut track, s, window_secs)?;
+        // Reload only the *RAM* window into the live cache (Tier A); the deeper
+        // disk history is served on demand via the group source below.
+        reload_window(&mut track, &s.lock().unwrap(), window_secs)?;
+        // Tier B: let the publisher serve groups older than the RAM cache
+        // straight from disk for resuming subscribers.
+        track.set_group_source(Arc::new(StoreSource(s.clone())))?;
     }
     let seed = store
         .as_ref()
-        .and_then(|s| s.max_seq())
+        .and_then(|s| s.lock().unwrap().max_seq())
         .or_else(|| load_group_seq(&group_seq_file));
     let group = make_first_group(&mut track, seed, &group_seq_file)?;
     Ok(FramePublisher::Lite {
@@ -561,9 +609,10 @@ enum FramePublisher {
         /// Where to persist the high-water group sequence so ids stay monotonic
         /// across restarts (None = ephemeral, restarts at 0).
         group_seq_file: Option<std::path::PathBuf>,
-        /// Disk store for restart-survivable replay (None = RAM only). Boxed to
-        /// keep this hot variant small (touched per-rotation, not per-frame).
-        store: Option<Box<GroupStore>>,
+        /// Disk store for restart-survivable replay (None = RAM only). Shared
+        /// (`Arc<Mutex>`) with the lite publisher's group source, which reads it
+        /// to serve the deep replay window. Touched per-rotation, not per-frame.
+        store: Option<Arc<Mutex<GroupStore>>>,
         /// Frames of the current (not-yet-finished) group, buffered so the
         /// completed group can be appended to `store` on rotation.
         group_frames: Vec<Bytes>,
@@ -597,7 +646,10 @@ impl FramePublisher {
                     // new sequence, so the store never advertises a group it
                     // hasn't durably stored.
                     if let Some(store) = store {
-                        store.append(finished_seq, now_ms(), group_frames)?;
+                        store
+                            .lock()
+                            .unwrap()
+                            .append(finished_seq, now_ms(), group_frames)?;
                         group_frames.clear();
                     }
                     // Persist on creation (not finish): a consumer only resumes
@@ -623,7 +675,7 @@ impl FramePublisher {
                 return;
             }
             let cutoff = now_ms().saturating_sub(window_secs * 1000);
-            if let Err(err) = store.gc(cutoff) {
+            if let Err(err) = store.lock().unwrap().gc(cutoff) {
                 tracing::warn!(?err, "group store gc failed");
             }
         }
@@ -686,11 +738,13 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
+    // Disk retention / deep-replay depth: defaults to the RAM window (Tier A).
+    let backfill_secs = args.backfill_window_secs;
     pump(
         rx,
         publisher,
         args.group_size,
-        args.replay_window_secs,
+        backfill_secs,
         args.cursor_file,
         last_seq,
     )
@@ -763,11 +817,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
+    // Disk retention / deep-replay depth: defaults to the RAM window (Tier A).
+    let backfill_secs = args.backfill_window_secs;
     let result = pump(
         rx,
         publisher,
         args.group_size,
-        args.replay_window_secs,
+        backfill_secs,
         args.cursor_file,
         last_seq,
     )

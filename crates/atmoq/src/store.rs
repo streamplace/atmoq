@@ -82,6 +82,13 @@ impl GroupStore {
         self.max_seq
     }
 
+    /// The lowest group sequence still on disk, or None if empty. This is the
+    /// floor of the deep (disk-served) replay window — the oldest group a
+    /// resuming subscriber can be backfilled from.
+    pub fn oldest_seq(&self) -> Option<u64> {
+        self.index.keys().next().copied()
+    }
+
     /// Append a group's frames. `created_ms` is the wall-clock time used for GC.
     pub fn append(&mut self, seq: u64, created_ms: u64, frames: &[Bytes]) -> Result<()> {
         self.ensure_writer(seq)?;

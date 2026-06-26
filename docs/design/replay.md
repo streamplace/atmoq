@@ -14,7 +14,7 @@ would only add random-access range fetch, which we don't need.
 Lets a consumer reconnect (relay process staying up) and replay the last N
 seconds, vs the 5s default.
 
-- **moq-net** (`docs/design/moq-net-max-group-age.patch`, applied via a temporary
+- **moq-net** (`docs/design/moq-net-replay.patch`, applied via a temporary
   local `[patch.crates-io]` to `../moq-net`): adds
   `TrackProducer::set_max_group_age(Duration)` overriding the hardcoded 5s
   `MAX_GROUP_AGE`. Additive, keeps the 5s default, unit-tested
@@ -57,7 +57,7 @@ to a current-main build and the e2e above passes. Follow-up (minor, separate fro
 replay): atmoq-go's `Insecure`/self-signed path doesn't work for an IP / hostname
 mismatch — fine for prod (real certs), worth fixing for local dev.
 
-## Phase 2 — on disk (implemented through Tier A)
+## Phase 2 — on disk (implemented: Tier A + Tier B)
 
 - **Durable, monotonic group IDs across restart — DONE.** `--group-seq-file`
   persists the high-water group seq; the first group after restart is seeded at
@@ -78,32 +78,61 @@ mismatch — fine for prod (real certs), worth fixing for local dev.
   Bounded by RAM (the reloaded window lives in the track), so this reaches
   minutes, not 72h.
 
-### Tier B — deep, disk-served window (beyond RAM) — remaining, needs moq-net
+### Tier B — deep, disk-served window (beyond RAM) — DONE
 
-For hours/days without holding the window in RAM, the publisher must serve old
-groups straight from disk on a `SUBSCRIBE(start_group=G)` rather than reloading
-them into the track. moq-net's `Track` is a shared in-RAM fan-out cache that
-evicts on age, so this needs a moq-net hook. Proposed API (coordinate with
-kixelated, alongside the `set_max_group_age` patch):
+For hours/days without holding the window in RAM, the publisher serves old groups
+straight from disk on `SUBSCRIBE(start_group=G)` rather than reloading them into
+the track. Implemented via a small moq-net hook + an atmoq `GroupSource`:
 
-```rust
-/// A fallback source of historical groups, consulted when a requested group is
-/// no longer in the in-RAM cache.
-pub trait GroupSource: Send + Sync {
-    fn group(&self, seq: u64) -> Option<Vec<Bytes>>; // None = not stored
-    fn oldest(&self) -> Option<u64>;
-}
-impl TrackProducer { pub fn set_group_source(&mut self, src: Arc<dyn GroupSource>); }
-```
+- **moq-net** (in `docs/design/moq-net-replay.patch`; see `../moq-net/UPSTREAM.md`):
+  a `GroupSource` trait (`group(seq) -> Option<Vec<Bytes>>`, `oldest()`),
+  `State.group_source` + `TrackProducer::set_group_source`, `TrackConsumer::oldest()`
+  (the in-RAM cache floor) + `group_source()`. In `lite/publisher.rs::run_track`,
+  when a subscriber's `start_group` predates the cache floor, it serves
+  `[max(start_group, source.oldest()) .. cache_floor)` from the source as ordinary
+  group streams — one open uni-stream at a time, so the subscriber's flow control
+  paces the backfill — then joins the live loop. The trait is sync and only called
+  on the backfill task (never the hot live loop); the cache floor is re-read each
+  iteration so the backfill converges on the eviction boundary and hands off live
+  without a gap.
+- **atmoq**: `StoreSource` implements `GroupSource` over the shared
+  `Arc<Mutex<store::GroupStore>>` (the same store the pump appends to;
+  `read`-by-seq and `oldest_seq` already exist). `build_lite_publisher` wires it
+  onto the track via `set_group_source`.
 
-Integration point is the publisher's per-subscription `run_track`
-(`lite/publisher.rs`): before `track.start_at(start_group)` serves from RAM,
-serve `[max(start_group, source.oldest()) .. oldest_in_ram)` from the source as
-ordinary group streams, then continue live. atmoq implements `GroupSource` over
-`store::GroupStore` (read-by-seq already exists). The disk read is async vs
-`poll_recv_group`'s sync `Poll`, so the cleanest seam is in `run_track` (its own
-async task) rather than inside the shared `TrackConsumer` poll. Scope with a
-spike before committing.
+**Decoupled windows (the key knob).** Tier A's `--replay-window-secs` drives the
+*RAM* cache age *and* the startup reload, so it stays small (the in-RAM fast
+path). `--backfill-window-secs` governs the *disk* retention (GC) and thus the
+depth the `GroupSource` serves — independent of RAM.
+
+**Defaults match indigo's relay out of the box** (Eli's call 2026-06-26 — same
+behavior from both without flags): the disk store is **on by default** at
+`--group-store-dir data/atmoq/store` (mirroring indigo's `--persist-dir
+data/relay/persist`), and `--backfill-window-secs` defaults to **259200 (72h)** —
+indigo's `RELAY_REPLAY_WINDOW`. `--replay-window-secs` stays at 60 as the RAM
+fast path; deeper resumes (up to 72h) are served from disk. So a bare `atmoq
+serve` / `atmoq relay` gives a consumer the same 72h resume horizon a WS relay
+does. (To run RAM-only/ephemeral, the disk store is structural now — point it at
+a throwaway dir; there's deliberately no off switch, matching indigo.)
+
+### Validation done (Tier B)
+End-to-end against a local `atmoq serve` (`--group-size 16 --replay-window-secs 8
+--backfill-window-secs 3600 --group-store-dir …`, upstream `wss://bsky.network`),
+consumer = atmoq-go v0.0.2:
+- Record live-edge group **G=366**; wait **16s** (2× the 8s RAM window, so G is
+  evicted from RAM but kept on disk); then `SubscribeFrom(366)` returns first
+  group **366** while a concurrent fresh live `Subscribe` is at edge **836** — i.e.
+  the resume replayed from disk **470 groups behind the live edge**, far beyond
+  what RAM held.
+- **Control** (same test, no `--group-store-dir`): `SubscribeFrom(178)` returns
+  **441** (the ~8s RAM cache floor, ~179 groups behind edge **620**) — G is lost
+  and the consumer must repair the `[178..441)` gap via PDS re-sync. This is the
+  gap Tier B closes.
+
+Limits: a group GC'd off the tail of the disk window between `oldest()` and the
+read is skipped (a small gap the consumer repairs via PDS re-sync); backfill of a
+very deep resume is bounded by disk read + wire throughput, which must exceed the
+live firehose rate to converge (it does in practice — disk replay outruns realtime).
 
 ## Phase 3 — interop + deep tail
 
