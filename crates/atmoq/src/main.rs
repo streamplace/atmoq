@@ -6,7 +6,9 @@
 //! MoQ relay (--moq-host) as the source. `atmoq relay` is the bridge:
 //! it consumes a WebSocket firehose and republishes it over MoQ.
 
-use atmoq::{dialect07, frame::Frame, ingest, json::cbor_to_json, store::GroupStore};
+use atmoq::{
+    dialect07, frame::Frame, ingest, json::cbor_to_json, router::DidRouter, store::GroupStore,
+};
 use base64::Engine;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
@@ -101,6 +103,11 @@ struct FirehoseArgs {
     /// whole events
     #[arg(long, alias = "records")]
     ops: bool,
+    /// Selective sync: consume only these accounts' events (comma-separated
+    /// DIDs), each via its own per-DID MoQ track, instead of the whole firehose.
+    /// Capped at 500 DIDs (matching Jetstream). MoQ (moq-lite) source only.
+    #[arg(long, value_delimiter = ',')]
+    wanted_dids: Vec<String>,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -244,6 +251,19 @@ async fn main() -> anyhow::Result<()> {
 type Item = (Option<u64>, Vec<u8>);
 
 async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
+    if args.wanted_dids.len() > 500 {
+        anyhow::bail!(
+            "--wanted-dids is capped at 500 (got {})",
+            args.wanted_dids.len()
+        );
+    }
+    if !args.wanted_dids.is_empty()
+        && (args.relay_host.is_some() || args.dialect == Dialect::Ietf07)
+    {
+        anyhow::bail!(
+            "--wanted-dids requires a moq-lite MoQ source (no --relay-host, no --dialect ietf-07)"
+        );
+    }
     let (tx, rx) = mpsc::channel::<Item>(256);
     if args.relay_host.is_none() {
         let moq_url = args.moq_host.clone();
@@ -260,14 +280,32 @@ async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
             let client = args.client.clone().init()?;
             let origin = moq_net::Origin::random().produce();
             let consumer = origin.consume();
-            let _session = client.with_consume(origin).connect(moq_url.clone()).await?;
-            tracing::info!(url = %moq_url, broadcast = %args.broadcast, "consuming from MoQ relay");
+            let session = client.with_consume(origin).connect(moq_url.clone()).await?;
             let broadcast_name = args.broadcast.clone();
-            let track_name = args.track.clone();
-            tokio::spawn(async move {
-                moq_reader(consumer, broadcast_name, track_name, tx).await;
-                drop(_session);
-            });
+            if args.wanted_dids.is_empty() {
+                tracing::info!(url = %moq_url, broadcast = %args.broadcast, "consuming from MoQ relay");
+                let track_name = args.track.clone();
+                tokio::spawn(async move {
+                    moq_reader(consumer, broadcast_name, track_name, tx).await;
+                    drop(session);
+                });
+            } else {
+                // Selective sync: one per-DID track subscription per wanted DID,
+                // all merged into the same output channel. The session must
+                // outlive every reader, so it's shared.
+                tracing::info!(url = %moq_url, broadcast = %args.broadcast, count = args.wanted_dids.len(), "consuming selected DIDs from MoQ relay");
+                let session = std::sync::Arc::new(session);
+                for did in args.wanted_dids.clone() {
+                    let consumer = consumer.clone();
+                    let broadcast_name = broadcast_name.clone();
+                    let tx = tx.clone();
+                    let session = session.clone();
+                    tokio::spawn(async move {
+                        moq_reader(consumer, broadcast_name, did, tx).await;
+                        drop(session);
+                    });
+                }
+            }
         }
     } else {
         let upstream = args.relay_host.clone().expect("relay_host checked above");
@@ -298,6 +336,11 @@ async fn moq_reader(
     track_name: String,
     tx: mpsc::Sender<Item>,
 ) {
+    // Per-track replay dedup: a single track's at-seq is monotonic, so dropping
+    // frames at or below the high-water removes the group re-delivered after a
+    // resubscribe. (print_events can't do this across merged per-DID tracks,
+    // whose seqs interleave.)
+    let mut last_seq = i64::MIN;
     loop {
         let Some(broadcast) = consumer.announced_broadcast(&broadcast_name).await else {
             tracing::info!("origin closed");
@@ -331,6 +374,12 @@ async fn moq_reader(
             loop {
                 match group.read_frame().await {
                     Ok(Some(data)) => {
+                        if let Some(s) = frame_seq(&data) {
+                            if s <= last_seq {
+                                continue; // already delivered (resubscribe replay)
+                            }
+                            last_seq = s;
+                        }
                         if tx.send((Some(sequence), data.to_vec())).await.is_err() {
                             return;
                         }
@@ -345,6 +394,14 @@ async fn moq_reader(
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+}
+
+/// Extract a frame's at-seq for per-track replay dedup. Cheap relative to the
+/// full decode print_events does; returns None for frames without a seq.
+fn frame_seq(raw: &[u8]) -> Option<i64> {
+    let (_, payload) = Frame::decode(raw).ok()?;
+    let i = atmoq::frame::field(&payload, "seq")?.as_integer()?;
+    Some(i128::from(i) as i64)
 }
 
 async fn print_events(mut rx: mpsc::Receiver<Item>, args: &FirehoseArgs) -> anyhow::Result<()> {
@@ -382,11 +439,16 @@ async fn print_events(mut rx: mpsc::Receiver<Item>, args: &FirehoseArgs) -> anyh
                 continue;
             }
         };
-        if let Some(s) = frame.seq {
-            if s <= last_seq {
-                continue; // group replay after a resubscribe
+        // With --wanted-dids, frames from different per-DID tracks interleave, so
+        // their seqs aren't globally monotonic — the readers dedup their own
+        // replays instead. Without it (single ordered stream), dedup here.
+        if args.wanted_dids.is_empty() {
+            if let Some(s) = frame.seq {
+                if s <= last_seq {
+                    continue; // group replay after a resubscribe
+                }
+                last_seq = s;
             }
-            last_seq = s;
         }
         if args.ops {
             if frame.t.as_deref() == Some("#commit") {
@@ -701,7 +763,11 @@ impl FramePublisher {
 async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     // _keepalive holds whatever must not drop for publishing to continue
     // (lite: the reconnecting session + origin producer).
-    let (publisher, _keepalive): (FramePublisher, Box<dyn std::any::Any>) = match args.dialect {
+    let (publisher, _keepalive, did_router): (
+        FramePublisher,
+        Box<dyn std::any::Any>,
+        Option<DidRouter>,
+    ) = match args.dialect {
         Dialect::Lite => {
             let client = args.client.clone().init()?;
             let origin = moq_net::Origin::random().produce();
@@ -712,6 +778,13 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
             })?;
             apply_replay_window(&mut track, args.replay_window_secs)?;
             origin.publish_broadcast(&args.broadcast, broadcast.consume());
+            // Selective sync: serve per-DID tracks on demand (subscribers
+            // reach this broadcast through the upstream relay).
+            let did_router = DidRouter::spawn(
+                broadcast.dynamic(),
+                args.group_size,
+                args.replay_window_secs,
+            );
             // auto-reconnecting session: publishing resumes after drops
             let session = client
                 .with_publish(origin.consume())
@@ -722,7 +795,11 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 &args.group_store_dir,
                 args.replay_window_secs,
             )?;
-            (publisher, Box::new((session, origin, broadcast)))
+            (
+                publisher,
+                Box::new((session, origin, broadcast)),
+                Some(did_router),
+            )
         }
         Dialect::Ietf07 => (
             FramePublisher::Ietf07(Box::new(dialect07::ResilientPublisher::new(
@@ -732,6 +809,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 args.track.clone(),
             ))),
             Box::new(()),
+            None,
         ),
     };
     tracing::info!(url = %args.moq_host, broadcast = %args.broadcast, "publishing to MoQ relay");
@@ -747,6 +825,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
         backfill_secs,
         args.cursor_file,
         last_seq,
+        did_router,
     )
     .await
 }
@@ -770,6 +849,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         &args.group_store_dir,
         args.replay_window_secs,
     )?;
+    // Selective sync: serve per-DID tracks on demand to subscribers that want
+    // only a subset of accounts. `broadcast.dynamic()` keeps the broadcast alive.
+    let did_router = DidRouter::spawn(
+        broadcast.dynamic(),
+        args.group_size,
+        args.replay_window_secs,
+    );
 
     // human-facing web frontend: :80 redirect + TLS landing page
     if let Ok(bind) = args.web_bind.parse::<std::net::SocketAddr>() {
@@ -826,6 +912,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         backfill_secs,
         args.cursor_file,
         last_seq,
+        Some(did_router),
     )
     .await;
     drop(broadcast);
@@ -893,6 +980,7 @@ async fn pump(
     window_secs: u64,
     cursor_file: Option<std::path::PathBuf>,
     last_seq: SharedSeq,
+    did_router: Option<DidRouter>,
 ) -> anyhow::Result<()> {
     let mut total = 0u64;
     let mut cursor_tick = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -922,6 +1010,11 @@ async fn pump(
                 continue; // reconnect replay duplicate
             }
             last_seq.store(seq, Ordering::Relaxed);
+        }
+        // Fan out to any per-DID (selective-sync) tracks before the aggregate
+        // write consumes the bytes. No-op when nothing is subscribed.
+        if let Some(router) = &did_router {
+            router.route(&frame.raw);
         }
         publisher.write(frame.raw, group_size).await?;
         total += 1;
