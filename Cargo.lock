@@ -1190,9 +1190,8 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32311a076e65af53bebb6ba1d6808aae929453800cbebc12e1fa561624baa808"
+version = "0.4.0"
+source = "git+https://github.com/streamplace/moq?branch=eli%2Fgroup-source#20d8c1adb22e7f276d45484765ad52656b32d15a"
 dependencies = [
  "smallvec",
 ]
@@ -1369,7 +1368,8 @@ dependencies = [
 
 [[package]]
 name = "moq-net"
-version = "0.1.10"
+version = "0.1.12"
+source = "git+https://github.com/streamplace/moq?branch=eli%2Fgroup-source#20d8c1adb22e7f276d45484765ad52656b32d15a"
 dependencies = [
  "bytes",
  "futures",
@@ -1728,7 +1728,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
