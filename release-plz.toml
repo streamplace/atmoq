@@ -1,14 +1,16 @@
 # release-plz: version bumping, changelog, git tags, and GitHub releases.
 # https://release-plz.dev
 #
-# atmoq depends on git revisions of cloudflare/moq-rs (see Cargo.toml), and
-# crates.io forbids git dependencies — so this crate cannot be published there.
-# We therefore disable cargo publishing and let release-plz own everything
+# atmoq vendors a patched moq-net in-tree at vendor/moq-net (see Cargo.toml's
+# [patch.crates-io]) until those changes land in a published moq-net, and
+# crates.io forbids path dependencies — so this crate cannot be published there
+# yet. We therefore disable cargo publishing and let release-plz own everything
 # else: the version, CHANGELOG.md, the git tag, and the GitHub release. The
 # release workflow's build job attaches prebuilt binaries to that release.
+# (Re-enable publish once the moq-net patch is dropped for a released crate.)
 
 [workspace]
-# Don't run `cargo publish` (crates.io rejects git deps; see above).
+# Don't run `cargo publish` (crates.io rejects the vendored path dep; see above).
 publish = false
 # Still cut a git tag and a GitHub release for every version bump.
 git_tag_enable = true
