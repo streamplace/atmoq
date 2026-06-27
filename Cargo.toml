@@ -36,7 +36,9 @@ url = "2"
 #      hardcoded 5s MAX_GROUP_AGE (RAM-bound; see --replay-window-secs).
 #   2. TrackProducer::set_group_source — serve groups older than the RAM cache
 #      from a pluggable (disk-backed) source on resume (see --backfill-window-secs).
-# Tracks the streamplace/moq fork branch (the moq-dev/moq monorepo + these two
-# commits). Drop this and pin a released moq-net once both land upstream.
+# Pinned to an exact rev on the streamplace/moq fork (the moq-dev/moq monorepo +
+# these two commits) for reproducible prod builds — a stray `cargo update` can't
+# move it. Branch: eli/group-source. Drop this and pin a released moq-net once
+# both land upstream.
 [patch.crates-io]
-moq-net = { git = "https://github.com/streamplace/moq", branch = "eli/group-source" }
+moq-net = { git = "https://github.com/streamplace/moq", rev = "20d8c1adb22e7f276d45484765ad52656b32d15a" }

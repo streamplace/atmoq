@@ -1191,7 +1191,7 @@ dependencies = [
 [[package]]
 name = "kio"
 version = "0.4.0"
-source = "git+https://github.com/streamplace/moq?branch=eli%2Fgroup-source#20d8c1adb22e7f276d45484765ad52656b32d15a"
+source = "git+https://github.com/streamplace/moq?rev=20d8c1adb22e7f276d45484765ad52656b32d15a#20d8c1adb22e7f276d45484765ad52656b32d15a"
 dependencies = [
  "smallvec",
 ]
@@ -1369,7 +1369,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.1.12"
-source = "git+https://github.com/streamplace/moq?branch=eli%2Fgroup-source#20d8c1adb22e7f276d45484765ad52656b32d15a"
+source = "git+https://github.com/streamplace/moq?rev=20d8c1adb22e7f276d45484765ad52656b32d15a#20d8c1adb22e7f276d45484765ad52656b32d15a"
 dependencies = [
  "bytes",
  "futures",
