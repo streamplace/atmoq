@@ -4,10 +4,12 @@
 
 FROM rust:1.95-bookworm AS build
 WORKDIR /src
-# Only the manifests + sources are needed (see .dockerignore). The git deps on
-# cloudflare/moq-rs are fetched during the build; --locked pins Cargo.lock.
+# Only the manifests + sources are needed (see .dockerignore). moq-net is
+# vendored in-tree at vendor/moq-net (see Cargo.toml [patch.crates-io]), so there
+# are no git deps to fetch; --locked pins Cargo.lock.
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY vendor ./vendor
 RUN cargo build --release --locked --bin atmoq \
     && cp target/release/atmoq /usr/local/bin/atmoq
 
