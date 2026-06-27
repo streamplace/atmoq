@@ -3,16 +3,14 @@ name: docker
 # Builds the atmoq image and pushes it to GitHub's container registry (GHCR).
 # Release-versioned tags (:X.Y.Z, :latest) are handled by the release-plz
 # workflow; this one publishes the moving development tags from main and does a
-# build-only sanity check when the Dockerfile itself changes in a PR.
+# build-only sanity check on every PR. (No paths filter: the image breaks on
+# Cargo/vendor/source changes, not just Dockerfile edits — a path-filtered run
+# once let a vendored-dep break slip through.)
 
 on:
   push:
     branches: [main]
   pull_request:
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - ".github/workflows/docker.yml"
   workflow_dispatch:
 
 concurrency:
