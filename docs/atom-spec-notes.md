@@ -76,8 +76,10 @@ numbering.
 means a commit is a natural immutable cache unit). For selectivity, use per-collection
 *tracks* (`at/repo/{host}/{did}` namespace, track per collection plus a `commits+mst`
 track) or FETCH-driven retrieval of specific records + MST proof paths, rather than
-subgroup filtering. Needs a design pass of its own; this is the most novel and most
-underspecified part of ATOM. The "record + MST proof path" object format also needs a
+subgroup filtering. See `docs/design/selective-sync.md` for the design pass: per-DID
+tracks materialized on demand via moq-net's dynamic-broadcast hook (relay-agnostic,
+no 40M-track announce), aimed at browser/WebTransport subset consumers. This is the
+most novel and most underspecified part of ATOM. The "record + MST proof path" object format also needs a
 concrete encoding (the existing CAR-slice format from at-repo §5 with dangling links is
 the obvious candidate).
 
