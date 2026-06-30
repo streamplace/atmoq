@@ -1,0 +1,3 @@
+allowBuilds:
+  '@fails-components/webtransport-transport-http3-quiche': true
+  esbuild: true

@@ -2,27 +2,64 @@
 // to the atproto broadcast/track, and pumps frames. This is the only module
 // that touches @moq/net — the rest of the package is pure decode.
 //
-// @moq/net handles WebTransport (browser-native, or a polyfill on Node), the
-// moq-lite/moq-transport version negotiation, ALPN, and stream multiplexing.
-// We just consume broadcasts and read frames — the same role the Go client's
-// quic-go + hand-rolled moq-lite plays, but delegated.
+// @moq/net handles the moq-lite/moq-transport wire protocol, stream multiplexing,
+// and version negotiation. On the transport side it needs either:
+//   - browser: native WebTransport (Chrome/Edge 97+, Firefox behind flag)
+//   - Node: a WebTransport polyfill — Node has no native WebTransport yet, and
+//     @moq/net's WebSocket fallback can't reach a raw MoQ relay (it speaks
+//     WebTransport-over-QUIC, not WebSocket). We install the polyfill below.
 
 import * as Moq from "@moq/net";
 import { DefaultBroadcast, DefaultTrack } from "./constants.js";
 import { decodeFrame, type AtSyncMessage } from "./frame.js";
 
+// Install a WebTransport polyfill on Node, where globalThis.WebTransport is
+// undefined. We try @fails-components/webtransport (the standard Node option);
+// if it's not installed, we fall through and @moq/net will error with a clear
+// message when it can't find any transport. The import is dynamic + optional
+// so the browser (which has native WebTransport) never pays this cost.
+//
+// CRITICAL: the polyfill's quiche (HTTP/3) native library loads asynchronously.
+// We must await `quicheLoaded` before any WebTransport connection is attempted,
+// or the connection silently fails with "Lib quiche loading attempt did not end".
+// See https://github.com/fails-components/webtransport#usage
+if (typeof globalThis.WebTransport === "undefined") {
+  try {
+    const polyfill = await import("@fails-components/webtransport");
+    globalThis.WebTransport = polyfill.WebTransport;
+    // Wait for the native QUIC library to finish loading before proceeding.
+    // Without this, @moq/net's connect() races ahead and the WebTransport
+    // constructor throws because quiche isn't ready yet.
+    await polyfill.quicheLoaded;
+  } catch {
+    // No polyfill installed — @moq/net will surface the error when connect()
+    // is called. We don't throw here so the pure-decode parts of this package
+    // (varint, frame) still work without the transport dependency.
+  }
+}
+
+// @fails-components/webtransport's WebTransport accepts a `rejectUnauthorized`
+// option that the DOM WebTransport type doesn't have. We extend the type so
+// our `--insecure` path type-checks.
+declare global {
+  interface WebTransportOptions {
+    rejectUnauthorized?: boolean;
+  }
+}
+
 /** Options for {@link connect}. */
 export interface ConnectOptions {
   /**
    * Skip TLS certificate verification. Useful for self-signed dev servers.
-   * On the browser this uses `serverCertificateHashes` pinning if a cert is
-   * available; on Node it sets `rejectUnauthorized: false` via the polyfill.
+   * On Node (via the polyfill) this sets `rejectUnauthorized: false`; on the
+   * browser there is no global skip flag — use `serverCertificateHashes` via
+   * a custom `transport` instead.
    */
   insecure?: boolean;
   /**
    * A pre-configured WebTransport instance. Pass one if you need to customize
    * the transport beyond what {@link insecure} covers (e.g. custom certs).
-   * When omitted, @moq/net's `Connection.connect` creates one for you.
+   * When omitted, one is created automatically.
    */
   transport?: WebTransport;
 }
@@ -154,21 +191,25 @@ export async function connect(
   opts: ConnectOptions = {},
 ): Promise<Session> {
   const parsed = parseDialURL(url);
+
+  // @moq/net's connect() accepts a pre-built WebTransport via `props.transport`,
+  // or creates one itself. For `--insecure` we build one with the polyfill's
+  // rejectUnauthorized: false; otherwise we let @moq/net handle it.
   const props: Moq.Connection.ConnectProps = {};
 
   if (opts.transport) {
     props.transport = opts.transport;
   } else if (opts.insecure) {
-    // @moq/net's connect accepts a WebTransport instance. For insecure dev
-    // servers, the caller should construct one with the appropriate polyfill
-    // options and pass it via `transport`. We surface a clear error if they
-    // set `insecure` without providing a transport, since the browser
-    // WebTransport API has no global "skip verification" flag.
-    throw new Error(
-      "atmoq: `insecure` requires a custom WebTransport instance — pass one via `opts.transport`. " +
-        "The browser WebTransport API has no global TLS-skip flag; use serverCertificateHashes " +
-        "or a Node polyfill with rejectUnauthorized.",
-    );
+    // Build a WebTransport with cert verification disabled. On Node this uses
+    // the polyfill's options; on the browser there's no equivalent (use
+    // serverCertificateHashes + a custom transport instead).
+    if (typeof globalThis.WebTransport !== "function") {
+      throw new Error(
+        "atmoq: --insecure requires a WebTransport polyfill " +
+          "(@fails-components/webtransport) — install it: npm install @fails-components/webtransport",
+      );
+    }
+    props.transport = new WebTransport(parsed, { rejectUnauthorized: false });
   }
 
   const established = await Moq.Connection.connect(parsed, props);
@@ -176,9 +217,11 @@ export async function connect(
 }
 
 /**
- * Parse a relay URL into a `URL` object, accepting the scheme aliases the Go
- * client accepts (moqt, moql, moq, moqs, or bare host[:port]). @moq/net's
- * `Connection.connect` expects a URL object.
+ * Parse a relay URL into an https:// URL for @moq/net's connect().
+ *
+ * @moq/net expects an https:// URL (it creates the WebTransport internally).
+ * We accept the moqt/moql/moq/moqs schemes (or bare host) and rewrite to https,
+ * mirroring the Go client's parseDialURL.
  */
 function parseDialURL(rawURL: string): URL {
   // Try as-is first; if there's no scheme, prepend moqt://.
@@ -196,12 +239,13 @@ function parseDialURL(rawURL: string): URL {
     case "moq:":
     case "moqs:":
       break;
+    case "https:":
+      // Already https — accept as-is (a caller may pass the final form).
+      return u;
     default:
       throw new Error(`atmoq: unsupported scheme ${u.protocol} (use moqt://)`);
   }
 
-  // @moq/net expects an https:// URL (it translates to WebTransport internally).
-  // The moqt: scheme is our hint; we rewrite to https for the underlying call.
-  const https = new URL("https://" + u.host + u.pathname);
-  return https;
+  // Rewrite moqt: → https: for the underlying WebTransport call.
+  return new URL("https://" + u.host + u.pathname);
 }

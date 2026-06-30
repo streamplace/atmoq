@@ -101,26 +101,8 @@ async function main() {
 
   const target = flags.positional[0] || "moqt://streamplace.network";
 
-  // For --insecure on Node, we need a WebTransport polyfill that can skip cert
-  // verification. Browsers use serverCertificateHashes instead (see README).
-  let transport;
-  if (flags.insecure) {
-    try {
-      const { WebTransport } = await import("@fails-components/webtransport");
-      const httpsUrl = target.replace(/^moq[tlps]?:\/\//, "https://");
-      transport = new WebTransport(httpsUrl, { rejectUnauthorized: false });
-    } catch {
-      console.error(
-        "atmoq-firehose: --insecure requires a WebTransport polyfill.\n" +
-          "Install one:  npm install -D @fails-components/webtransport\n" +
-          "(browsers use serverCertificateHashes — see ts/README.md)",
-      );
-      process.exit(1);
-    }
-  }
-
   console.error(`connecting to ${target}...`);
-  const sess = await connect(target, { transport });
+  const sess = await connect(target, { insecure: flags.insecure });
   console.error(`connected (version: ${sess.version})`);
 
   const sub = sess.subscribe(flags.broadcast, flags.track);
