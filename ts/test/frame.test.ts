@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import * as dagCbor from "@ipld/dag-cbor";
+import { encode, decode } from "@atproto/lex-cbor";
 import { decodeFrame } from "../src/frame.js";
 
 /**
@@ -8,8 +8,8 @@ import { decodeFrame } from "../src/frame.js";
  * `atmoq` republishes over MoQ.
  */
 function makeFrame(header: unknown, payload: unknown): Uint8Array {
-  const h = dagCbor.encode(header);
-  const p = dagCbor.encode(payload);
+  const h = encode(header);
+  const p = encode(payload);
   const out = new Uint8Array(h.length + p.length);
   out.set(h, 0);
   out.set(p, h.length);
@@ -40,14 +40,14 @@ describe("decodeFrame", () => {
     expect(msg.payload).toBeInstanceOf(Uint8Array);
     expect(msg.payload.length).toBeGreaterThan(0);
     // Round-trip the payload to confirm it's intact.
-    expect(dagCbor.decode(msg.payload)).toEqual(payload);
+    expect(decode(msg.payload)).toEqual(payload);
   });
 
   it("decodes a #identity message", () => {
     const header = {
       t: "#identity",
       did: "did:plc:example123",
-      seq: 1000n,
+      seq: 1000,
       time: "2026-06-30T12:00:00.000Z",
     };
     const payload = { handle: "example.bsky.social" };
@@ -63,7 +63,7 @@ describe("decodeFrame", () => {
   it("decodes an #account message", () => {
     const header = {
       t: "#account",
-      seq: 5000n,
+      seq: 5000,
       did: "did:plc:example123",
       time: "2026-06-30T12:00:00.000Z",
     };
@@ -78,19 +78,19 @@ describe("decodeFrame", () => {
 
   it("preserves the full payload bytes (not just a prefix)", () => {
     // A payload with enough bytes that the header boundary is non-trivial.
-    const header = { t: "#seq", seq: 1n };
+    const header = { t: "#seq", seq: 1 };
     const payload = { large: new Uint8Array(256).fill(0xab) };
 
     const frame = makeFrame(header, payload);
     const msg = decodeFrame(frame);
 
-    const decodedPayload = dagCbor.decode(msg.payload);
+    const decodedPayload = decode(msg.payload);
     expect(decodedPayload).toEqual(payload);
     expect((decodedPayload as any).large.length).toBe(256);
   });
 
   it("defaults group and frame sequence to 0", () => {
-    const frame = makeFrame({ t: "#seq", seq: 1n }, null);
+    const frame = makeFrame({ t: "#seq", seq: 1 }, null);
     const msg = decodeFrame(frame);
     expect(msg.group).toBe(0);
     expect(msg.frame).toBe(0);

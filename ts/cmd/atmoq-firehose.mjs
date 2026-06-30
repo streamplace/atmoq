@@ -19,7 +19,7 @@
 //   -h, --help           show this help
 
 import { connect, parseCarBlocks } from "@streamplace/atmoq";
-import * as dagCbor from "@ipld/dag-cbor";
+import { decode, encode } from "@atproto/lex-cbor";
 
 const args = process.argv.slice(2);
 
@@ -145,7 +145,7 @@ async function main() {
               group: msg.group,
               frame: msg.frame,
               type: msg.header.t,
-              header: msg.header,
+              header: cborToJson(msg.header),
               seq: peekPayloadSeq(msg.payload),
               payloadBytes: msg.payload.length,
             },
@@ -182,7 +182,7 @@ async function main() {
 function printOps(payload) {
   let commit;
   try {
-    commit = dagCbor.decode(payload);
+    commit = decode(payload);
   } catch {
     console.error("warning: failed to decode commit payload");
     return 0;
@@ -195,7 +195,7 @@ function printOps(payload) {
     return 0;
   }
 
-  // Parse the CAR blocks (CID → block bytes).
+  // Parse the CAR blocks (CID hex → block bytes).
   let blocks;
   try {
     blocks = parseCarBlocks(blocksBytes);
@@ -211,24 +211,22 @@ function printOps(payload) {
 
   let printed = 0;
   for (const op of ops) {
-    // The CID is a CBOR tag 42 (byte string). @ipld/dag-cbor decodes tag 42
-    // to a CID object (multiformats CID), which has a .bytes property.
-    let record = null;
+    // @atproto/lex-cbor decodes CBOR tag 42 (CID) to a Cid object with a
+    // .toString() that yields the canonical base32 form (bafyrei...).
     const cid = op.cid;
+    let record = null;
     if (cid) {
-      // CID objects from @ipld/dag-cbor have a .bytes property (the raw CID
-      // bytes). We look up the block by these bytes in the CAR map.
-      // The CAR blocks are keyed by hex string (Uint8Array keys don't work
-      // with Map — reference equality, not value equality).
-      const cidKey = cid.bytes ?? (cid instanceof Uint8Array ? cid : null);
-      if (cidKey) {
-        // Strip the 0x00 multibase-identity prefix if present, then hex-encode.
-        const rawCid = cidKey[0] === 0 ? cidKey.subarray(1) : cidKey;
+      // The CAR blocks are keyed by hex string of the raw CID bytes.
+      // @atproto/lex-cbor's Cid has a .bytes property (the raw CIDv1 bytes).
+      const cidBytes = cid.bytes ?? (cid instanceof Uint8Array ? cid : null);
+      if (cidBytes) {
+        // Strip the 0x00 multibase-identity prefix if present.
+        const rawCid = cidBytes[0] === 0 ? cidBytes.subarray(1) : cidBytes;
         const hexKey = Buffer.from(rawCid).toString("hex");
         const blockBytes = blocks.get(hexKey);
         if (blockBytes) {
           try {
-            record = cborToJson(dagCbor.decode(blockBytes));
+            record = cborToJson(decode(blockBytes));
           } catch {
             // leave record null
           }
@@ -253,65 +251,45 @@ function printOps(payload) {
   return printed;
 }
 
-// Convert a CID (from @ipld/dag-cbor tag 42 decode) to a string.
-// @ipld/dag-cbor decodes tag 42 to a multiformats CID object, which has
-// a .toString() that yields the canonical base32 form (bafy...).
+// Render a Cid (from @atproto/lex-cbor tag 42 decode) as a string.
+// @atproto/lex-cbor decodes tag 42 to a Cid object from @atproto/lex-data,
+// which has a .toString() yielding the canonical base32 form (bafyrei...).
 function cidToString(cid) {
   if (!cid) return null;
   if (typeof cid.toString === "function") {
     const s = cid.toString();
-    if (s !== "[object Object]") return s;
-  }
-  // Fallback: if it's raw bytes, encode as base32 (at-repo appendix A.1).
-  if (cid.bytes instanceof Uint8Array) {
-    const raw = cid.bytes[0] === 0 ? cid.bytes.subarray(1) : cid.bytes;
-    return "b" + base32Nopad(raw).toLowerCase();
+    // Cid.toString() returns the canonical CID string.
+    if (s && s !== "[object Object]") return s;
   }
   return null;
-}
-
-// Base32 (no padding) encoder, matching the Rust implementation's
-// data_encoding::BASE32_NOPAD.
-function base32Nopad(bytes) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = 0;
-  let value = 0;
-  let output = "";
-  for (const byte of bytes) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      output += alphabet[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) {
-    output += alphabet[(value << (5 - bits)) & 31];
-  }
-  return output;
 }
 
 // Render a decoded CBOR value as JSON, converting CIDs to strings and byte
 // arrays to { $bytesLength: n } (matching the Rust CLI's cbor_to_json).
 function cborToJson(v) {
-  // CID objects (from dag-cbor tag 42) have a .code and .bytes property.
-  if (v && typeof v === "object" && !(v instanceof Uint8Array) && !Array.isArray(v)) {
-    // Check if it's a CID (multiformats CID has .code and .version)
-    if ("code" in v && "version" in v && "bytes" in v) {
-      return cidToString(v);
+  if (v === null || v === undefined) return null;
+
+  // Cid objects (from @atproto/lex-cbor tag 42 decode) have a .toString()
+  // that yields the canonical base32 CID string.
+  if (typeof v === "object" && typeof v.toString === "function") {
+    const s = v.toString();
+    if (s && s.startsWith("bafy") || (s && s.startsWith("bafk"))) {
+      return s;
     }
-    // Regular object — recurse over entries.
-    const out = {};
-    for (const [k, val] of Object.entries(v)) {
-      out[k] = cborToJson(val);
-    }
-    return out;
   }
+
   if (v instanceof Uint8Array) {
     return { $bytesLength: v.length };
   }
   if (Array.isArray(v)) {
     return v.map(cborToJson);
+  }
+  if (typeof v === "object") {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) {
+      out[k] = cborToJson(val);
+    }
+    return out;
   }
   // BigInts that exceed Number.MAX_SAFE_INTEGER stay as strings.
   if (typeof v === "bigint") {
@@ -329,7 +307,7 @@ function cborToJson(v) {
 // payload themselves per the atproto spec.
 function peekPayloadSeq(payload) {
   try {
-    const decoded = dagCbor.decode(payload);
+    const decoded = decode(payload);
     if (decoded && typeof decoded === "object" && "seq" in decoded) {
       return decoded.seq;
     }
