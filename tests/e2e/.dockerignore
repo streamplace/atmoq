@@ -1,3 +1,7 @@
 node_modules
 dev-env/dist
 *.jsonl
+# The e2e image needs rust/Cargo.toml, Cargo.lock, crates, AND vendor/ (the
+# [patch.crates-io] patch path must exist). Only exclude the build cache.
+rust/target
+go

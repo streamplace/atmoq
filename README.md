@@ -3,18 +3,42 @@
 An [atproto](https://atproto.com) relay that speaks [MoQ](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
 to its subscribers, implementing the ideas in
 [ATOM (draft-nandakumar-atproto-atom)](https://datatracker.ietf.org/doc/draft-nandakumar-atproto-atom/).
-Rust first; TypeScript (browser + server) to follow.
 
-Status: early prototype. One binary, `atmoq`, with a
+This is a **polyglot monorepo**: the reference relay/server is Rust, the
+consumer client is Go, and a TypeScript client (browser + server) is planned.
+Each language keeps its own version and release cadence.
+
+## Layout
+
+```
+atmoq/
+├── rust/          Rust workspace: the `atmoq` binary (firehose bridge, server, relay)
+│   ├── crates/       the atmoq crate
+│   ├── vendor/       patched moq-net (see rust/Cargo.toml [patch.crates-io])
+│   ├── Cargo.toml    workspace root
+│   ├── release-plz.toml
+│   └── Dockerfile     production image (ghcr.io/streamplace/atmoq)
+├── go/            Go client: subscribe to an atmoq firehose over MoQ
+│   ├── client.go     dial, subscribe, read frames
+│   ├── varint.go     MoQ varint helpers
+│   └── cmd/atmoq-firehose/  demo consumer CLI
+├── tests/e2e/     Dockerized differential harness (PLC + PDS + indigo oracle + MoQ leg)
+├── docs/          specs, design notes, decision records, compatibility findings
+└── justfile       task runner for both languages
+```
+
+## Rust: the `atmoq` binary
+
+Status: early prototype. One binary with a
 [goat](https://github.com/bluesky-social/goat)-shaped CLI:
 
 ```
 atmoq firehose                                  # tail the atproto firehose over MoQ
-                                                # (default: https://streamplace.network)
+                                                 # (default: https://streamplace.network)
 atmoq firehose --ops                            # ...as individual record operations
 atmoq firehose --relay-host wss://bsky.network  # plain WS consumer, like goat firehose
 atmoq serve                                     # host your own: WS ingest -> MoQ fanout,
-                                                # with a landing page (see docs/going-live.md)
+                                                 # with a landing page (see docs/going-live.md)
 atmoq relay --moq-host https://cdn.moq.dev/anon/<scope>    # bridge through a public MoQ relay
 atmoq relay --moq-host https://relay.cloudflare.mediaoverquic.com \
             --dialect ietf-07 --broadcast <scope>          # ...including Cloudflare's (draft-07)
@@ -31,12 +55,61 @@ the upstream cursor persists via `--cursor-file`, and consumers survive
 publisher restarts. See [docs/going-live.md](docs/going-live.md) for running
 this as a service.
 
+## Go: the consumer client
+
+A Go client for the atproto firehose carried over MoQ transport — the
+consumer side of `atmoq`. It speaks kixelated's **moq-lite** protocol
+(draft 03/04) directly over raw QUIC.
+
+```go
+import "github.com/streamplace/atmoq/go"
+
+sess, err := atmoq.Dial(ctx, "moqt://streamplace.network", nil)
+if err != nil { /* ... */ }
+defer sess.Close()
+
+sub, err := sess.Subscribe(ctx, atmoq.DefaultBroadcast, atmoq.DefaultTrack)
+if err != nil { /* ... */ }
+defer sub.Close()
+
+for {
+    frame, group, err := sub.ReadFrame(ctx) // frame is raw at-sync message bytes
+    if err != nil { break }
+    _ = group
+    // decode frame as { CBOR header, CBOR payload }
+}
 ```
+
+Consumer (subscribe) path only: connect, subscribe to a track, and read
+frames from the live edge. No publishing, no ANNOUNCE-based discovery, no
+cursor/replay. See [go/](go/) for the full README and API.
+
+## Releasing
+
+Each language releases independently with distinct tag prefixes, so a Go
+fix never forces a Rust version bump (or vice-versa):
+
+| Language | Tag format   | Mechanism                          | Install                                    |
+|----------|--------------|------------------------------------|--------------------------------------------|
+| Rust     | `rust-vX.Y.Z` | release-plz (rust/release-plz.toml) | prebuilt binaries on the GitHub release   |
+| Go       | `go/vX.Y.Z`   | `just go-release X.Y.Z` (manual)   | `go get github.com/streamplace/atmoq/go@vX.Y.Z` |
+
+> **Note for Go consumers:** the module path changed from
+> `github.com/streamplace/atmoq-go` to `github.com/streamplace/atmoq/go`
+> when the client moved into this monorepo. Update your imports and
+> `go get` the new path. The standalone `atmoq-go` repo is archived.
+
+## Tasks
+
+```
+just test            # cargo test (rust/) + go test (go/)
+just rust-test       # cargo test + Dockerized e2e harness
+just go-check        # go build + vet + test
 just live-relay      # wss://bsky.network -> cdn.moq.dev/anon/atmoq-demo
 just live-tail       # cdn.moq.dev -> stdout, from anywhere
 just live-relay-cf   # same, via Cloudflare's relay (draft-07)
 just live-tail-cf
-just test            # cargo test + Dockerized e2e (PLC + PDS + indigo oracle + MoQ leg)
+just install-hooks   # enable rustfmt + gofmt pre-commit hook
 ```
 
 - [PLAN.md](PLAN.md) — implementation plan, milestones, open questions

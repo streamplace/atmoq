@@ -1,48 +1,135 @@
-# atmoq task runner — https://just.systems
+# atmoq monorepo task runner — https://just.systems
+#
+# Layout: rust/ (Rust workspace + vendored moq-net), go/ (Go client), docs/,
+# tests/e2e/. A TypeScript client is planned under ts/ (see PLAN.md).
+# Each language keeps its own release cadence: Rust tags rust-vX.Y.Z via
+# release-plz (rust/release-plz.toml); Go tags go/vX.Y.Z via `just go-release`.
 
 default:
     @just --list
 
-# Install git hooks (rustfmt on commit) for this clone
+# Install git hooks (rustfmt + gofmt on commit) for this clone
 install-hooks:
     git config core.hooksPath .githooks
-    @echo "pre-commit rustfmt hook enabled"
+    @echo "pre-commit rustfmt + gofmt hook enabled"
+
+# --- top-level ----------------------------------------------------------
+
+# Run unit tests for every language
+test: rust-test-unit go-test
+
+# --- Rust (rust/) -------------------------------------------------------
+# Run cargo from rust/ — the workspace root after the monorepo move.
+
+# Rust unit tests
+rust-test-unit:
+    cd rust && cargo test --workspace --locked
 
 # Build the e2e harness Docker image (PLC + PDS + indigo relay oracle + atmoq)
-build:
+rust-build-e2e:
     docker build -t atmoq-e2e -f tests/e2e/Dockerfile .
 
 # Run unit tests + the e2e differential harness
-test: test-unit test-e2e
-
-# Rust unit tests
-test-unit:
-    cargo test
+rust-test: rust-test-unit rust-test-e2e
 
 # e2e differential harness (Docker)
-test-e2e:
+rust-test-e2e:
     tests/e2e/test.sh
 
 # Relay the live Bluesky firehose through a public MoQ relay
-live-relay scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
-    cargo run --release --bin atmoq -- relay --moq-host {{relay_url}}/{{scope}}
+rust-live-relay scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
+    cd rust && cargo run --release --bin atmoq -- relay --moq-host {{relay_url}}/{{scope}}
 
 # Tail a live broadcast back from the public MoQ relay
-live-tail scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
-    cargo run --release --bin atmoq -- firehose --moq-host {{relay_url}}/{{scope}}
+rust-live-tail scope="atmoq-demo" relay_url="https://cdn.moq.dev/anon":
+    cd rust && cargo run --release --bin atmoq -- firehose --moq-host {{relay_url}}/{{scope}}
 
 # Serve MoQ subscribers directly from this box (dev TLS; use --tls-cert/key in prod)
-live-serve bind="[::]:4443":
-    cargo run --release --bin atmoq -- serve --server-bind '{{bind}}' --tls-generate localhost
+rust-live-serve bind="[::]:4443":
+    cd rust && cargo run --release --bin atmoq -- serve --server-bind '{{bind}}' --tls-generate localhost
 
 # Same pair via Cloudflare's relay (draft-07 dialect; v4 bind for v4-only hosts)
-live-relay-cf scope="atmoq-demo":
-    cargo run --release --bin atmoq -- relay --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
+rust-live-relay-cf scope="atmoq-demo":
+    cd rust && cargo run --release --bin atmoq -- relay --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
 
-live-tail-cf scope="atmoq-demo":
-    cargo run --release --bin atmoq -- firehose --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
+rust-live-tail-cf scope="atmoq-demo":
+    cd rust && cargo run --release --bin atmoq -- firehose --moq-host https://relay.cloudflare.mediaoverquic.com --dialect ietf-07 --broadcast {{scope}} --client-bind 0.0.0.0:0
 
-# Remove harness containers and image
+# --- Go (go/) -----------------------------------------------------------
+
+# Go unit tests
+go-test:
+    cd go && go test ./...
+
+# Build, vet, and test the Go client
+go-check:
+    cd go && go build ./... && go vet ./... && go test ./...
+
+# Format all Go sources
+go-fmt:
+    cd go && gofmt -w .
+
+# Tail a relay's atproto firehose over MoQ (default: streamplace.network)
+go-firehose relay="moqt://streamplace.network":
+    cd go && go run ./cmd/atmoq-firehose {{relay}}
+
+# Tidy go.mod/go.sum, then fail if either changed (run before releasing)
+go-verify-tidy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd go
+    go mod tidy
+    if ! git diff --quiet -- go.mod go.sum; then
+        echo "go.mod/go.sum are not tidy — commit what 'go mod tidy' just produced:" >&2
+        git --no-pager diff -- go.mod go.sum >&2
+        exit 1
+    fi
+
+# Cut a Go release: `just go-release 0.0.1` validates, tags go/v0.0.1, and
+# pushes it. A Go module in a subdirectory MUST use slash-prefixed tags
+# (go/vX.Y.Z) for the proxy to resolve versions — go-vX.Y.Z would not work.
+# Consumers then `go get github.com/streamplace/atmoq/go@v0.0.1`.
+go-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ver="{{version}}"
+    ver="${ver#v}"
+    if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "version must be semver X.Y.Z (e.g. 0.0.1), got '{{version}}'" >&2
+        exit 1
+    fi
+    tag="go/v$ver"
+
+    if ! git remote get-url origin >/dev/null 2>&1; then
+        echo "no 'origin' remote set" >&2
+        exit 1
+    fi
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "working tree is dirty; commit or stash before releasing" >&2
+        exit 1
+    fi
+    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+        echo "tag $tag already exists" >&2
+        exit 1
+    fi
+
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    just go-check
+    just go-verify-tidy
+
+    echo "==> tagging $tag on '$branch' and pushing to origin"
+    git tag -a "$tag" -m "atmoq go client $tag"
+    git push origin "$branch"
+    git push origin "$tag"
+
+    echo "==> released $tag"
+    echo "    go get github.com/streamplace/atmoq/go@$tag"
+
+# --- housekeeping -------------------------------------------------------
+
+# Remove e2e harness containers and image
 clean:
     -docker rm -f atmoq-e2e-run
     -docker rmi atmoq-e2e

@@ -52,7 +52,10 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          # The Rust workspace (and Dockerfile) live in rust/ after the
+          # monorepo move; the image only needs Cargo.toml/Cargo.lock/crates/vendor.
+          context: rust
+          file: rust/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

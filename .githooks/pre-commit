@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
-# Auto-format staged Rust with rustfmt before each commit, so commits always
-# satisfy the `fmt --check` CI gate (see .github/workflows/ci.yml).
+# Auto-format staged Rust and Go before each commit, so commits always satisfy
+# both the `cargo fmt --check` and `gofmt -l` CI gates (see .github/workflows/ci.yml).
 #
 # Enable in your clone with: `just install-hooks` (sets core.hooksPath).
-# Exits fast when no Rust files are staged.
+# Exits fast when no formattable files are staged, and degrades gracefully
+# (skips, with a warning) when the relevant toolchain isn't installed.
 set -euo pipefail
 
+# --- Rust (rustfmt) -------------------------------------------------------
 staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
-[ -z "$staged_rs" ] && exit 0
-
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "pre-commit: cargo not found; skipping rustfmt (CI still enforces it)" >&2
-  exit 0
+if [ -n "$staged_rs" ]; then
+  if command -v cargo >/dev/null 2>&1; then
+    # rustfmt needs the whole workspace for module/macro context. Run it in
+    # rust/ (the workspace root); paths are repo-relative, which rustfmt accepts.
+    cargo fmt --all --manifest-path rust/Cargo.toml
+    # Re-stage the formatted versions of the files that were already staged.
+    echo "$staged_rs" | xargs git add --
+  else
+    echo "pre-commit: cargo not found; skipping rustfmt (CI still enforces it)" >&2
+  fi
 fi
 
-# rustfmt needs the whole workspace for module/macro context.
-cargo fmt --all
-
-# Re-stage the formatted versions of the files that were already staged.
-echo "$staged_rs" | xargs git add --
+# --- Go (gofmt) ----------------------------------------------------------
+staged_go=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+if [ -n "$staged_go" ]; then
+  if command -v gofmt >/dev/null 2>&1; then
+    # gofmt formats each file independently, so just rewrite the staged ones
+    # and re-stage the formatted versions.
+    echo "$staged_go" | xargs gofmt -w --
+    echo "$staged_go" | xargs git add --
+  else
+    echo "pre-commit: gofmt not found; skipping gofmt (CI still enforces it)" >&2
+  fi
+fi

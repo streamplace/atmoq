@@ -15,7 +15,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  fmt:
+  # --- Rust (rust/) --------------------------------------------------------
+  rust-fmt:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
@@ -23,9 +24,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all --check
+      - run: cargo fmt --all --manifest-path rust/Cargo.toml --check
 
-  clippy:
+  rust-clippy:
     name: clippy
     runs-on: ubuntu-latest
     steps:
@@ -34,22 +35,26 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       # Git deps (cloudflare/moq-rs) compile with cap-lints, so `-D warnings`
       # only fails on lints in our own crates.
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy --all --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings
 
-  test:
-    name: test
+  rust-test:
+    name: rust test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       # Plain `cargo test` covers unit, integration, and doctests.
-      - run: cargo test --workspace --locked
+      - run: cargo test --manifest-path rust/Cargo.toml --workspace --locked
 
-  build:
-    name: build release (${{ matrix.target }})
+  rust-build:
+    name: rust build (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -69,5 +74,63 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: rust
           key: ${{ matrix.target }}
-      - run: cargo build --workspace --release --locked --bins --target ${{ matrix.target }}
+      - run: cargo build --manifest-path rust/Cargo.toml --workspace --release --locked --bins --target ${{ matrix.target }}
+
+  # --- Go (go/) ------------------------------------------------------------
+  go-fmt:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      - name: gofmt -l
+        working-directory: go
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  go-vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      - working-directory: go
+        run: go vet ./...
+
+  go-tidy:
+    name: go mod tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      # go.mod/go.sum must already be tidy — fail if `go mod tidy` would change them.
+      - working-directory: go
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  go-test:
+    name: go build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      - working-directory: go
+        run: |
+          go build ./...
+          go test -race ./...

@@ -1,5 +1,6 @@
-# Production image for the `atmoq` binary. Build context is the repo root:
-#   docker build -t atmoq .
+# Production image for the `atmoq` binary. Build context is rust/ (the cargo
+# workspace root after the monorepo move):
+#   docker build -t atmoq -f rust/Dockerfile rust/
 # Published to ghcr.io/streamplace/atmoq by .github/workflows/docker.yml.
 
 FROM rust:1.95-bookworm AS build

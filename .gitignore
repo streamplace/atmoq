@@ -1,5 +1,14 @@
+# Rust build artifacts (rust/ workspace + vendored moq-net)
+rust/target/
+target/
+
+# Go build artifacts
+go/atmoq-firehose
+
+# Node (e2e harness dev-env build)
 node_modules/
 dist/
+
+# Local data
 data/
-target/
 *.jsonl
