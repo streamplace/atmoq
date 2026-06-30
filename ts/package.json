@@ -1,0 +1,56 @@
+{
+  "name": "@streamplace/atmoq",
+  "version": "0.0.1",
+  "description": "TypeScript client for the atproto firehose over MoQ transport — the browser + server consumer side of atmoq.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/streamplace/atmoq.git",
+    "directory": "ts"
+  },
+  "homepage": "https://github.com/streamplace/atmoq/tree/main/ts#readme",
+  "bugs": {
+    "url": "https://github.com/streamplace/atmoq/issues"
+  },
+  "keywords": [
+    "atproto",
+    "bluesky",
+    "moq",
+    "quic",
+    "firehose",
+    "webtransport"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@ipld/dag-cbor": "^9.2.3",
+    "@moq/net": "0.1.6",
+    "multiformats": "^13.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -5,7 +5,7 @@ to its subscribers, implementing the ideas in
 [ATOM (draft-nandakumar-atproto-atom)](https://datatracker.ietf.org/doc/draft-nandakumar-atproto-atom/).
 
 This is a **polyglot monorepo**: the reference relay/server is Rust, the
-consumer client is Go, and a TypeScript client (browser + server) is planned.
+consumer client is Go, and a TypeScript client (browser + server) is included.
 Each language keeps its own version and release cadence.
 
 ## Layout
@@ -22,9 +22,12 @@ atmoq/
 │   ├── client.go     dial, subscribe, read frames
 │   ├── varint.go     MoQ varint helpers
 │   └── cmd/atmoq-firehose/  demo consumer CLI
+├── ts/            TypeScript client: browser + server via WebTransport
+│   ├── src/          transport (over @moq/net), frame decode, varint
+│   └── test/         vitest unit tests
 ├── tests/e2e/     Dockerized differential harness (PLC + PDS + indigo oracle + MoQ leg)
 ├── docs/          specs, design notes, decision records, compatibility findings
-└── justfile       task runner for both languages
+└── justfile       task runner for all three languages
 ```
 
 ## Rust: the `atmoq` binary
@@ -84,15 +87,37 @@ Consumer (subscribe) path only: connect, subscribe to a track, and read
 frames from the live edge. No publishing, no ANNOUNCE-based discovery, no
 cursor/replay. See [go/](go/) for the full README and API.
 
+## TypeScript: the browser + server client
+
+A TypeScript consumer that runs in both the browser (via native WebTransport)
+and Node (via a WebTransport polyfill). The transport layer is delegated to
+[`@moq/net`](https://www.npmjs.com/package/@moq/net); this package is a thin
+domain layer that dials a relay, subscribes, and decodes each MoQ frame into an
+at-sync message byte-identical to a `subscribeRepos` WebSocket message.
+
+```typescript
+import { connect } from "@streamplace/atmoq";
+
+const sess = await connect("moqt://streamplace.network");
+const sub = sess.subscribe(); // defaults: broadcast "atproto", track "atproto"
+
+for await (const msg of sub) {
+  console.log(msg.header.t, msg.payload.length); // "#commit", 1234
+}
+```
+
+See [ts/](ts/) for the full README and API. Same consumer-only scope as Go.
+
 ## Releasing
 
-Each language releases independently with distinct tag prefixes, so a Go
-fix never forces a Rust version bump (or vice-versa):
+Each language releases independently with distinct tag prefixes, so a fix in one
+never forces a version bump in another:
 
-| Language | Tag format   | Mechanism                          | Install                                    |
-|----------|--------------|------------------------------------|--------------------------------------------|
-| Rust     | `rust-vX.Y.Z` | release-plz (rust/release-plz.toml) | prebuilt binaries on the GitHub release   |
-| Go       | `go/vX.Y.Z`   | `just go-release X.Y.Z` (manual)   | `go get github.com/streamplace/atmoq/go@vX.Y.Z` |
+| Language   | Tag format     | Mechanism                          | Install                                            |
+|------------|----------------|------------------------------------|----------------------------------------------------|
+| Rust       | `rust-vX.Y.Z`  | release-plz (rust/release-plz.toml) | prebuilt binaries on the GitHub release            |
+| Go         | `go/vX.Y.Z`    | `just go-release X.Y.Z` (manual)   | `go get github.com/streamplace/atmoq/go@vX.Y.Z`    |
+| TypeScript | `ts/vX.Y.Z`    | `just ts-release X.Y.Z` (manual)    | `npm install @streamplace/atmoq@X.Y.Z`             |
 
 > **Note for Go consumers:** the module path changed from
 > `github.com/streamplace/atmoq-go` to `github.com/streamplace/atmoq/go`
@@ -102,9 +127,11 @@ fix never forces a Rust version bump (or vice-versa):
 ## Tasks
 
 ```
-just test            # cargo test (rust/) + go test (go/)
+just test            # cargo test (rust/) + go test (go/) + vitest (ts/)
 just rust-test       # cargo test + Dockerized e2e harness
 just go-check        # go build + vet + test
+just ts-check        # tsc --noEmit
+just ts-test         # vitest
 just live-relay      # wss://bsky.network -> cdn.moq.dev/anon/atmoq-demo
 just live-tail       # cdn.moq.dev -> stdout, from anywhere
 just live-relay-cf   # same, via Cloudflare's relay (draft-07)

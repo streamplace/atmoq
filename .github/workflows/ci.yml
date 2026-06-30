@@ -134,3 +134,34 @@ jobs:
         run: |
           go build ./...
           go test -race ./...
+
+  # --- TypeScript (ts/) ----------------------------------------------------
+  ts-check:
+    name: tsc --noEmit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ts/.nvmrc
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+      - working-directory: ts
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+  ts-test:
+    name: vitest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ts/.nvmrc
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+      - working-directory: ts
+        run: |
+          npm ci
+          npx vitest run

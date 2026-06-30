@@ -5,7 +5,7 @@ target/
 # Go build artifacts
 go/atmoq-firehose
 
-# Node (e2e harness dev-env build)
+# Node (e2e harness dev-env build + ts/ client)
 node_modules/
 dist/
 

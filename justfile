@@ -1,9 +1,9 @@
 # atmoq monorepo task runner — https://just.systems
 #
-# Layout: rust/ (Rust workspace + vendored moq-net), go/ (Go client), docs/,
-# tests/e2e/. A TypeScript client is planned under ts/ (see PLAN.md).
+# Layout: rust/ (Rust workspace + vendored moq-net), go/ (Go client),
+# ts/ (TypeScript client, browser + server via WebTransport), docs/, tests/e2e/.
 # Each language keeps its own release cadence: Rust tags rust-vX.Y.Z via
-# release-plz (rust/release-plz.toml); Go tags go/vX.Y.Z via `just go-release`.
+# release-plz; Go tags go/vX.Y.Z; TS tags ts/vX.Y.Z — all via `just *-release`.
 
 default:
     @just --list
@@ -16,7 +16,7 @@ install-hooks:
 # --- top-level ----------------------------------------------------------
 
 # Run unit tests for every language
-test: rust-test-unit go-test
+test: rust-test-unit go-test ts-test
 
 # --- Rust (rust/) -------------------------------------------------------
 # Run cargo from rust/ — the workspace root after the monorepo move.
@@ -126,6 +126,68 @@ go-release version:
 
     echo "==> released $tag"
     echo "    go get github.com/streamplace/atmoq/go@$tag"
+
+# --- TypeScript (ts/) ---------------------------------------------------
+
+# TypeScript unit tests
+ts-test:
+    cd ts && npx vitest run
+
+# Type-check (tsc --noEmit)
+ts-check:
+    cd ts && npx tsc --noEmit
+
+# Build to dist/
+ts-build:
+    cd ts && npx tsc
+
+# Install dependencies
+ts-install:
+    cd ts && npm install
+
+# Cut a TS release: `just ts-release 0.0.1` validates, tags ts/v0.0.1, and
+# publishes to npm as @streamplace/atmoq. Requires an npm auth token
+# (npm login or NPM_CONFIG_REGISTRY + token in env).
+ts-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ver="{{version}}"
+    ver="${ver#v}"
+    if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "version must be semver X.Y.Z (e.g. 0.0.1), got '{{version}}'" >&2
+        exit 1
+    fi
+    tag="ts/v$ver"
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "working tree is dirty; commit or stash before releasing" >&2
+        exit 1
+    fi
+    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+        echo "tag $tag already exists" >&2
+        exit 1
+    fi
+
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    just ts-check
+    just ts-test
+
+    # Bump the version in package.json, build, and publish.
+    ( cd ts && npm version "$ver" --no-git-tag-version )
+    just ts-build
+    ( cd ts && npm publish --access public )
+
+    git add ts/package.json ts/package-lock.json
+    git commit -m "ts: release v$ver"
+
+    echo "==> tagging $tag on '$branch' and pushing to origin"
+    git tag -a "$tag" -m "atmoq ts client $tag"
+    git push origin "$branch"
+    git push origin "$tag"
+
+    echo "==> released $tag"
+    echo "    npm install @streamplace/atmoq@$ver"
 
 # --- housekeeping -------------------------------------------------------
 
