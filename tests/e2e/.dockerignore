@@ -1,8 +1,7 @@
 node_modules
 dev-env/dist
 *.jsonl
-# The e2e image only needs Cargo.toml/Cargo.lock/crates from rust/ (no vendor/
-# or target/ — see Dockerfile), and nothing from go/.
-rust/vendor
+# The e2e image needs rust/Cargo.toml, Cargo.lock, crates, AND vendor/ (the
+# [patch.crates-io] patch path must exist). Only exclude the build cache.
 rust/target
 go
