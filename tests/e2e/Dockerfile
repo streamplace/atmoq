@@ -11,8 +11,12 @@ FROM rust:1.95-bookworm AS rustbuild
 # moq-relay first: heavy, rarely changes, caches independently of our code
 RUN cargo install moq-relay --version 0.12.9 --locked --root /moq
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+# The Rust workspace lives in rust/ (monorepo). vendor/ is intentionally NOT
+# copied: the [patch.crates-io] path is absent in-container, so cargo falls
+# back to the published moq-net 0.1.10 on crates.io (verified: cargo tolerates
+# the missing path). --locked pins Cargo.lock.
+COPY rust/Cargo.toml rust/Cargo.lock ./
+COPY rust/crates ./crates
 RUN cargo build --release --bins \
     && mkdir -p /out && cp target/release/atmoq /out/
 

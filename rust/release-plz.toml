@@ -9,15 +9,21 @@
 # release workflow's build job attaches prebuilt binaries to that release.
 # (Re-enable publish once the moq-net patch is dropped for a released crate.)
 
+# Monorepo: the Rust client lives in rust/. To keep its release cadence
+# independent of the Go client (go/, which tags go/vX.Y.Z), release-plz cuts
+# `rust-vX.Y.Z` tags. The release workflow points release-plz at rust/Cargo.toml
+# via its manifest_path input; this config sits next to that manifest.
+# (Re-enable publish once the moq-net patch is dropped for a released crate.)
+
 [workspace]
 # Don't run `cargo publish` (crates.io rejects the vendored path dep; see above).
 publish = false
 # Still cut a git tag and a GitHub release for every version bump.
 git_tag_enable = true
 git_release_enable = true
-# Single-crate workspace: tag as `v0.1.0`, not `atmoq-v0.1.0`.
-git_tag_name = "v{{ version }}"
-git_release_name = "v{{ version }}"
+# Tag as `rust-v0.1.0` to avoid collision with the Go client's `go/vX.Y.Z` tags.
+git_tag_name = "rust-v{{ version }}"
+git_release_name = "rust-v{{ version }}"
 # Keep CHANGELOG.md generated from conventional commits.
 changelog_update = true
 # Pre-1.0: keep breaking changes bumping the patch/minor as usual rather than

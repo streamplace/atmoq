@@ -27,6 +27,9 @@ jobs:
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
+          # The Rust workspace lives in rust/ (monorepo); release-plz.toml
+          # sits next to that Cargo.toml.
+          manifest_path: rust/Cargo.toml
         env:
           # A PAT (RELEASE_PLZ_TOKEN) makes CI run on the release PR; without
           # one we fall back to GITHUB_TOKEN, which still works but won't
@@ -51,6 +54,7 @@ jobs:
         uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
+          manifest_path: rust/Cargo.toml
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -92,9 +96,12 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: rust
           key: ${{ matrix.target }}
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
+          # The Rust workspace is in rust/; point the action at its manifest.
+          manifest-path: rust/Cargo.toml
           bin: atmoq
           target: ${{ matrix.target }}
           archive: atmoq-$tag-$target
@@ -136,7 +143,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: rust
+          file: rust/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

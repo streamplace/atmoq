@@ -9,17 +9,13 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/**"
+      - "rust/**"
       - "tests/e2e/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
       - ".github/workflows/e2e.yml"
   pull_request:
     paths:
-      - "crates/**"
+      - "rust/**"
       - "tests/e2e/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
       - ".github/workflows/e2e.yml"
   workflow_dispatch:
 
