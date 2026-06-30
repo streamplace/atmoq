@@ -29,15 +29,20 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "atmoq-firehose": "./cmd/atmoq-firehose.mjs"
+  },
   "files": [
     "dist",
-    "src"
+    "src",
+    "cmd"
   ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "firehose": "node cmd/atmoq-firehose.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

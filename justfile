@@ -145,6 +145,10 @@ ts-build:
 ts-install:
     cd ts && npm install
 
+# Tail a relay's atproto firehose over MoQ via the TS client (default: streamplace.network)
+ts-firehose relay="moqt://streamplace.network":
+    cd ts && node cmd/atmoq-firehose.mjs {{relay}}
+
 # Cut a TS release: `just ts-release 0.0.1` validates, tags ts/v0.0.1, and
 # publishes to npm as @streamplace/atmoq. Requires an npm auth token
 # (npm login or NPM_CONFIG_REGISTRY + token in env).
