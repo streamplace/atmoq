@@ -25,5 +25,7 @@ export type {
   FrameHeader,
   MessageType,
 } from "./frame.js";
+export { parseCarBlocks } from "./car.js";
+export type { CarBlocks } from "./car.js";
 export { DefaultBroadcast, DefaultTrack } from "./constants.js";
 export * as Varint from "./varint.js";
