@@ -515,6 +515,8 @@ fn print_ops(payload: &ciborium::Value, quiet: bool) -> anyhow::Result<usize> {
         let record = cid_bytes
             .as_ref()
             .and_then(|c| blocks.get(c))
+            // Records are DRISL too; reject invalid ones (rendered as null).
+            .filter(|data| atmoq::drisl::validate_exact(data).is_ok())
             .and_then(|data| ciborium::de::from_reader::<ciborium::Value, _>(data.as_slice()).ok())
             .map(|v| cbor_to_json(&v));
         if !quiet {

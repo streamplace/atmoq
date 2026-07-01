@@ -174,14 +174,22 @@ mod tests {
     use ciborium::value::Value;
 
     fn frame_bytes(t: &str, did_key: &str, did: &str) -> Vec<u8> {
+        // Frames must be valid DRISL now, so keys go in bytewise-encoded order
+        // ("t" before "op"; payload sorted below), as real PDS encoders emit.
         let header = Value::Map(vec![
-            (Value::Text("op".into()), Value::Integer(1.into())),
             (Value::Text("t".into()), Value::Text(t.into())),
+            (Value::Text("op".into()), Value::Integer(1.into())),
         ]);
-        let payload = Value::Map(vec![
+        let mut entries = vec![
             (Value::Text(did_key.into()), Value::Text(did.into())),
             (Value::Text("seq".into()), Value::Integer(42.into())),
-        ]);
+        ];
+        entries.sort_by_key(|(k, _)| {
+            let mut b = Vec::new();
+            ciborium::ser::into_writer(k, &mut b).unwrap();
+            b
+        });
+        let payload = Value::Map(entries);
         let mut raw = Vec::new();
         ciborium::ser::into_writer(&header, &mut raw).unwrap();
         ciborium::ser::into_writer(&payload, &mut raw).unwrap();

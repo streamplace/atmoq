@@ -38,9 +38,10 @@ pub async fn subscribe_repos(
                     }
                 }
                 Err(err) => {
-                    // at-sync consumers must tolerate unknown/garbled frames
-                    // from other parties; log and continue.
-                    tracing::warn!(?err, "skipping unparseable frame");
+                    // Rejected: invalid DRISL or not at-sync-shaped. atmoq is
+                    // DRISL-strict by design (see drisl.rs) — the frame is not
+                    // republished; the relay carries valid frames only.
+                    tracing::warn!(err = format!("{err:#}"), "rejecting frame");
                 }
             },
             Message::Ping(_) | Message::Pong(_) => {}

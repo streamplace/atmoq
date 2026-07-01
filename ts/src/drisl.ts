@@ -40,9 +40,11 @@ export class InvalidDrislError extends Error {
   }
 }
 
-// Deeply nested documents are rejected rather than risking stack exhaustion.
-// Real atproto records nest a handful of levels; 1024 is generous.
-const MAX_DEPTH = 1024;
+// Deeply nested documents are rejected rather than risking stack exhaustion
+// (the validator recurses per level). Real atproto records nest a handful of
+// levels; 128 matches serde_ipld_dagcbor's recursion limit. Keep in sync with
+// the Rust sibling (rust/crates/atmoq/src/drisl.rs).
+const MAX_DEPTH = 128;
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
