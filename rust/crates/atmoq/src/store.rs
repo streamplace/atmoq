@@ -56,6 +56,27 @@ struct Segment {
     v2: bool,
 }
 
+/// A resolved on-disk position of a group, detached from the store so the
+/// file read can happen without holding the store's lock.
+pub struct GroupLocation {
+    path: PathBuf,
+    offset: u64,
+    v2: bool,
+}
+
+/// Read a group's frames at a previously-located position. Standalone so
+/// callers can do the (blocking) file I/O after releasing the store lock; if
+/// GC deleted the segment in between, this errors and the caller treats the
+/// group as evicted.
+pub fn read_group_at(loc: &GroupLocation, seq: u64) -> Result<Vec<Bytes>> {
+    let mut f = File::open(&loc.path).with_context(|| format!("opening {}", loc.path.display()))?;
+    f.seek(SeekFrom::Start(loc.offset))?;
+    let (rec_seq, _ms, frames) = read_record(&mut f, loc.v2)?
+        .ok_or_else(|| anyhow::anyhow!("truncated record for group {seq}"))?;
+    anyhow::ensure!(rec_seq == seq, "index/segment mismatch: {rec_seq} != {seq}");
+    Ok(frames)
+}
+
 /// A disk-backed group store. Single-writer (the pump loop); reads recover the
 /// index built at open time.
 pub struct GroupStore {
@@ -144,17 +165,24 @@ impl GroupStore {
 
     /// Read back a group's frames, or None if not stored (evicted or never seen).
     pub fn read(&self, seq: u64) -> Result<Option<Vec<Bytes>>> {
-        let Some(loc) = self.index.get(&seq).copied() else {
+        let Some(loc) = self.locate(seq) else {
             return Ok(None);
         };
+        read_group_at(&loc, seq).map(Some)
+    }
+
+    /// Where to find a group on disk, or None if not stored. Cheap (index
+    /// only) — callers holding a lock around the store can locate under the
+    /// lock and do the actual file I/O after releasing it (see
+    /// [`read_group_at`]).
+    pub fn locate(&self, seq: u64) -> Option<GroupLocation> {
+        let loc = self.index.get(&seq)?;
         let seg = &self.segments[loc.segment];
-        let mut f =
-            File::open(&seg.path).with_context(|| format!("opening {}", seg.path.display()))?;
-        f.seek(SeekFrom::Start(loc.offset))?;
-        let (rec_seq, _ms, frames) = read_record(&mut f, seg.v2)?
-            .ok_or_else(|| anyhow::anyhow!("truncated record for group {seq}"))?;
-        anyhow::ensure!(rec_seq == seq, "index/segment mismatch: {rec_seq} != {seq}");
-        Ok(Some(frames))
+        Some(GroupLocation {
+            path: seg.path.clone(),
+            offset: loc.offset,
+            v2: seg.v2,
+        })
     }
 
     /// Group sequences whose group is newer than `cutoff_ms`, ascending — the

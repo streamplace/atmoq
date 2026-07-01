@@ -19,15 +19,21 @@ use tokio::sync::mpsc;
 /// Adapts the disk-backed [`GroupStore`] to moq-net's [`moq_net::GroupSource`]
 /// so the lite publisher can serve a deep (disk-served) replay window for
 /// subscribers resuming from a group that's already aged out of the RAM cache.
-/// Shares the same store the pump writes to (`Arc<Mutex<..>>`); reads only take
-/// the lock for the brief synchronous seek+read, never across an await.
+/// Shares the same store the pump writes to (`Arc<Mutex<..>>`); the lock is
+/// held only for the in-memory index lookup — the actual disk read happens
+/// after release, so concurrent deep resumes never serialize the ingest
+/// pump's appends behind their file I/O.
 struct StoreSource(Arc<Mutex<GroupStore>>);
 
 impl moq_net::GroupSource for StoreSource {
     fn group(&self, sequence: u64) -> Option<Vec<Bytes>> {
-        match self.0.lock().unwrap().read(sequence) {
-            Ok(frames) => frames,
+        let loc = self.0.lock().unwrap().locate(sequence)?;
+        match atmoq::store::read_group_at(&loc, sequence) {
+            Ok(frames) => Some(frames),
             Err(err) => {
+                // Racing GC (segment deleted between locate and read) lands
+                // here too; the group is simply gone — a gap the consumer
+                // repairs via PDS re-sync.
                 tracing::warn!(?err, sequence, "group source read failed");
                 None
             }
