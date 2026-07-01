@@ -43,8 +43,13 @@ docker exec -d "$NAME" bash -c \
   'atmoq-firehose-go --insecure --raw --idle-ms 8000 moqt://localhost:4443 >/tmp/moq-go.jsonl 2>/tmp/moq-go-tail.log'
 
 echo "starting MoQ tail (TS client)..."
+# Cert pinning (serverCertificateHashes) instead of --insecure: the polyfill's
+# rejectUnauthorized path is experimental and fails the WT handshake; moq-relay
+# serves its current cert hash over plain HTTP for exactly this.
 docker exec -d "$NAME" bash -c \
-  'node /app/ts/cmd/atmoq-firehose.mjs moqt://localhost:4443 --insecure --raw --idle-ms 8000 >/tmp/moq-ts.jsonl 2>/tmp/moq-ts-tail.log'
+  'node /app/ts/cmd/atmoq-firehose.mjs moqt://localhost:4443 \
+     --cert-hash "$(curl -s http://localhost:4443/certificate.sha256)" \
+     --raw --idle-ms 8000 >/tmp/moq-ts.jsonl 2>/tmp/moq-ts-tail.log'
 
 echo "driving writes..."
 docker exec "$NAME" node /app/harness/driver.mjs >/tmp/atmoq-driver.json

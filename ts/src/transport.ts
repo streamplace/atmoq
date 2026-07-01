@@ -56,14 +56,22 @@ declare global {
 export interface ConnectOptions {
   /**
    * Skip TLS certificate verification. Useful for self-signed dev servers.
-   * On Node (via the polyfill) this sets `rejectUnauthorized: false`; on the
-   * browser there is no global skip flag — use `serverCertificateHashes` via
-   * a custom `transport` instead.
+   * On Node (via the polyfill) this sets `rejectUnauthorized: false` — an
+   * experimental polyfill path that fails against some servers; prefer
+   * {@link certHashes}, which works on both Node and browsers.
    */
   insecure?: boolean;
   /**
+   * Pin the server certificate by SHA-256 hash (WebTransport
+   * `serverCertificateHashes`) — the standard dev-server path on both Node
+   * and browsers. moq relays typically serve their current hash over HTTP
+   * (e.g. `http://host:4443/certificate.sha256`). Takes precedence over
+   * {@link insecure}.
+   */
+  certHashes?: WebTransportHash[];
+  /**
    * A pre-configured WebTransport instance. Pass one if you need to customize
-   * the transport beyond what {@link insecure} covers (e.g. custom certs).
+   * the transport beyond what the other options cover.
    * When omitted, one is created automatically.
    */
   transport?: WebTransport;
@@ -258,6 +266,16 @@ export async function connect(
 
   if (opts.transport) {
     props.transport = opts.transport;
+  } else if (opts.certHashes?.length) {
+    if (typeof globalThis.WebTransport !== "function") {
+      throw new Error(
+        "atmoq: certHashes requires WebTransport (native or the " +
+          "@fails-components/webtransport polyfill)",
+      );
+    }
+    props.transport = new WebTransport(parsed, {
+      serverCertificateHashes: opts.certHashes,
+    });
   } else if (opts.insecure) {
     // Build a WebTransport with cert verification disabled. On Node this uses
     // the polyfill's options; on the browser there's no equivalent (use

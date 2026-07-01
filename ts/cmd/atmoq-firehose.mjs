@@ -16,6 +16,7 @@
 //   --raw                one JSON line per frame with base64 raw bytes
 //   --json               pretty-print decoded header + payload as JSON
 //   --insecure           allow self-signed certs (Node polyfill only)
+//   --cert-hash <hex>    pin the server cert by SHA-256 hash (dev TLS)
 //   --idle-ms <n>        exit after N ms without a frame (--raw path)
 //   -h, --help           show this help
 
@@ -26,6 +27,15 @@ import {
   InvalidFrameError,
 } from "@streamplace/atmoq";
 import { decode } from "@atproto/lex-cbor";
+
+// stdout is exclusively the frame/op output stream (JSONL, pipeable to jq);
+// everything else goes to stderr. @moq/net logs its protocol chatter via
+// console.debug/console.log, which Node sends to stdout — rebind those so
+// library logging can't corrupt the output stream.
+console.log = console.error.bind(console);
+console.debug = console.error.bind(console);
+console.info = console.error.bind(console);
+const stdout = (line) => process.stdout.write(line + "\n");
 
 const args = process.argv.slice(2);
 
@@ -38,6 +48,7 @@ function parseFlags(args) {
     raw: false,
     json: false,
     insecure: false,
+    certHash: "",
     idleMs: 0,
     help: false,
     positional: [],
@@ -66,6 +77,9 @@ function parseFlags(args) {
         break;
       case "--insecure":
         flags.insecure = true;
+        break;
+      case "--cert-hash":
+        flags.certHash = args[++i];
         break;
       case "--idle-ms":
         flags.idleMs = parseInt(args[++i], 10);
@@ -99,6 +113,7 @@ Flags:
   --raw                one JSON line per frame with base64 raw bytes
   --json               pretty-print decoded header + payload as JSON
   --insecure           allow self-signed certs (Node polyfill only)
+  --cert-hash <hex>    pin the server cert by SHA-256 hash (dev TLS)
   --idle-ms <n>        exit after N ms without a frame (--raw path; 0 = never)
   -h, --help           show this help
 
@@ -120,7 +135,17 @@ async function main() {
   const target = flags.positional[0] || "moqt://streamplace.network";
 
   console.error(`connecting to ${target}...`);
-  const sess = await connect(target, { insecure: flags.insecure });
+  const opts = { insecure: flags.insecure };
+  if (flags.certHash) {
+    // Pin the server cert by SHA-256 hash (hex) — the reliable dev-TLS path
+    // on both Node and browsers; moq relays serve theirs at
+    // http://host:port/certificate.sha256.
+    const value = Uint8Array.from(
+      flags.certHash.trim().match(/../g).map((b) => parseInt(b, 16)),
+    );
+    opts.certHashes = [{ algorithm: "sha-256", value }];
+  }
+  const sess = await connect(target, opts);
   console.error(`connected (version: ${sess.version})`);
 
   const sub = sess.subscribe(flags.broadcast, flags.track);
@@ -151,7 +176,7 @@ async function main() {
       if (!frame) break;
       // JSONL with a base64 `raw` field — the shape the e2e diff harness and
       // the Rust CLI's --raw output share.
-      console.log(
+      stdout(
         JSON.stringify({
           group: frame.group,
           raw: Buffer.from(frame.data).toString("base64"),
@@ -174,7 +199,7 @@ async function main() {
               count += opsPrinted;
             }
           } else if (flags.json) {
-            console.log(
+            stdout(
               JSON.stringify(
                 {
                   group: msg.group,
@@ -191,7 +216,7 @@ async function main() {
             count++;
           } else {
             // Default: one compact JSON line per frame, like the Go CLI.
-            console.log(
+            stdout(
               JSON.stringify({
                 group: msg.group,
                 type: msg.header.t,
@@ -288,7 +313,7 @@ function printOps(payload) {
       }
     }
 
-    console.log(
+    stdout(
       JSON.stringify({
         action: op.action,
         path: op.path,
