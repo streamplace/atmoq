@@ -6,9 +6,10 @@
 // moq-lite relays accept alongside h3. A consumer subscribes to a broadcast's
 // track and receives a stream of "groups", each carrying length-prefixed
 // frames. For atmoq, every frame is one at-sync firehose message: the exact
-// same bytes (a DAG-CBOR header object followed by a DAG-CBOR payload object)
-// that com.atproto.sync.subscribeRepos delivers over WebSocket. So a frame can
-// be fed straight into indigo's existing event decoder.
+// same bytes (a DRISL header object followed by a DRISL payload object) that
+// com.atproto.sync.subscribeRepos delivers over WebSocket. So a frame can be
+// fed straight into indigo's existing event decoder. See ValidateDrisl for
+// atmoq's stack-wide DRISL strictness.
 //
 // This package implements the consumer (subscribe) path only.
 package atmoq

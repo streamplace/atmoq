@@ -55,10 +55,21 @@ func run(ctx context.Context, target, broadcast, track string, insecure bool, li
 	defer sub.Close()
 
 	count := 0
+	rejected := 0
 	for {
 		raw, group, err := sub.ReadFrame(ctx)
 		if err != nil {
+			if rejected > 0 {
+				slog.Warn("rejected invalid DRISL frames", "count", rejected)
+			}
 			return err
+		}
+		// atmoq is DRISL-strict across the stack: reject frames that aren't
+		// two valid DRISL objects instead of printing lenient decodes.
+		if err := validateFrame(raw); err != nil {
+			rejected++
+			slog.Warn("rejected frame", "group", group, "err", err)
+			continue
 		}
 		typ, seq := peek(raw)
 		out, _ := json.Marshal(map[string]any{
@@ -74,6 +85,26 @@ func run(ctx context.Context, target, broadcast, track string, insecure bool, li
 			return nil
 		}
 	}
+}
+
+// validateFrame checks that a frame is exactly two valid DRISL objects
+// (header + payload), matching the Rust relay's ingest validation.
+func validateFrame(raw []byte) error {
+	headerEnd, err := atmoq.ValidateDrisl(raw, 0)
+	if err != nil {
+		return fmt.Errorf("header: %w", err)
+	}
+	if headerEnd >= len(raw) {
+		return fmt.Errorf("frame has 1 CBOR item, expected header + payload")
+	}
+	payloadEnd, err := atmoq.ValidateDrisl(raw, headerEnd)
+	if err != nil {
+		return fmt.Errorf("payload: %w", err)
+	}
+	if payloadEnd != len(raw) {
+		return fmt.Errorf("%d trailing byte(s) after payload", len(raw)-payloadEnd)
+	}
+	return nil
 }
 
 // peek decodes just the header's message type and the payload's seq from a
