@@ -639,6 +639,13 @@ fn build_lite_publisher(
     // The disk store is always on for Lite serve/relay (mirrors indigo's
     // always-persisting relay); the directory has a default.
     let store = Some(Arc::new(Mutex::new(GroupStore::open(group_store_dir)?)));
+    // The seq sidecar records the *in-progress* group's sequence (persisted at
+    // creation), which the store alone can't know: groups reach the store only
+    // on rotation, so store.max_seq() is the last *completed* group. Without
+    // the sidecar, a restart would re-issue the in-progress group's sequence
+    // for different content. Default it into the store dir so the guarantee
+    // holds without configuration.
+    let group_seq_file = group_seq_file.or_else(|| Some(group_store_dir.join("group_seq")));
     if let Some(s) = &store {
         // Reload only the *RAM* window into the live cache (Tier A); the deeper
         // disk history is served on demand via the group source below.
@@ -647,10 +654,17 @@ fn build_lite_publisher(
         // straight from disk for resuming subscribers.
         track.set_group_source(Arc::new(StoreSource(s.clone())))?;
     }
-    let seed = store
-        .as_ref()
-        .and_then(|s| s.lock().unwrap().max_seq())
-        .or_else(|| load_group_seq(&group_seq_file));
+    let store_max = store.as_ref().and_then(|s| s.lock().unwrap().max_seq());
+    // Seed = previous high-water sequence; the first group is seed + 1.
+    // With a sidecar value f (the last in-progress group) and a store high
+    // water m (the last completed group), the true high water is max(f, m).
+    // A non-empty store without a sidecar (legacy layout) means the last run's
+    // in-progress sequence is unknown — assume the worst case (m + 1 was in
+    // flight) and skip one id; gaps are harmless, reuse is not.
+    let seed = match load_group_seq(&group_seq_file) {
+        Some(f) => Some(store_max.map_or(f, |m| f.max(m))),
+        None => store_max.map(|m| m + 1),
+    };
     let group = make_first_group(&mut track, seed, &group_seq_file)?;
     Ok(FramePublisher::Lite {
         track,
@@ -748,8 +762,24 @@ impl FramePublisher {
             FramePublisher::Lite {
                 mut track,
                 mut group,
+                store,
+                group_frames,
                 ..
             } => {
+                // Flush the in-progress group to disk so a clean shutdown
+                // leaves no replay gap: its frames were already streamed live,
+                // and reload_window re-creates the group (same sequence, same
+                // content) on the next start. An unclean shutdown still loses
+                // these frames (they're only stored on rotation), but the
+                // sidecar seq file guarantees the sequence is never reused.
+                if let Some(store) = &store {
+                    if !group_frames.is_empty() {
+                        store
+                            .lock()
+                            .unwrap()
+                            .append(group.sequence, now_ms(), &group_frames)?;
+                    }
+                }
                 group.finish()?;
                 track.finish()?;
                 Ok(())
@@ -1062,6 +1092,90 @@ mod tests {
         // None path is a no-op (never panics, never reads).
         persist_group_seq(&None, 5);
         assert_eq!(load_group_seq(&None), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn test_track() -> moq_net::TrackProducer {
+        let mut broadcast = moq_net::Broadcast::new().produce();
+        broadcast
+            .create_track(moq_net::Track {
+                name: "test".into(),
+                priority: 0,
+            })
+            .unwrap()
+    }
+
+    fn lite_parts(p: &FramePublisher) -> (u64, Option<Arc<Mutex<GroupStore>>>) {
+        match p {
+            FramePublisher::Lite { group, store, .. } => (group.sequence, store.clone()),
+            _ => panic!("expected lite publisher"),
+        }
+    }
+
+    #[test]
+    fn group_sequence_is_never_reused_across_restarts() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "atmoq-restart-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // Run 1: rotate once (group 0 completes, stored), leave group 1
+        // in progress with one frame, shut down cleanly.
+        {
+            let mut p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, _) = lite_parts(&p);
+            assert_eq!(seq, 0);
+            rt.block_on(async {
+                p.write(b"f0".to_vec(), 2).await.unwrap();
+                p.write(b"f1".to_vec(), 2).await.unwrap(); // rotates: group 0 stored
+                p.write(b"f2".to_vec(), 2).await.unwrap(); // group 1, in progress
+            });
+            p.finish().unwrap();
+        }
+
+        // Run 2: the clean shutdown flushed partial group 1 to the store, so
+        // no replay gap; the first live group must be 2, never 1 again.
+        {
+            let mut p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, store) = lite_parts(&p);
+            assert_eq!(seq, 2);
+            let store = store.unwrap();
+            assert_eq!(
+                store.lock().unwrap().read(1).unwrap().unwrap(),
+                vec![Bytes::from("f2")]
+            );
+            // Leave group 2 in progress with a frame and crash (no finish).
+            rt.block_on(async {
+                p.write(b"f3".to_vec(), 2).await.unwrap();
+            });
+            drop(p);
+        }
+
+        // Run 3: unclean shutdown lost group 2's frames (stored only on
+        // rotation), but the sidecar seq file still forbids reusing its
+        // sequence — the first live group must be 3.
+        {
+            let p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, store) = lite_parts(&p);
+            assert_eq!(seq, 3);
+            assert!(store.unwrap().lock().unwrap().read(2).unwrap().is_none());
+        }
+
+        // Legacy layout: a store without a sidecar seq file must skip one id
+        // past the last completed group (the in-progress sequence is unknown).
+        std::fs::remove_file(dir.join("group_seq")).unwrap();
+        {
+            let p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, _) = lite_parts(&p);
+            // Store high water is 1 (completed groups 0 and 1) → seed 2 → first 3.
+            assert_eq!(seq, 3);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
