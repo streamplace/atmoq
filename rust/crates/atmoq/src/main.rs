@@ -563,11 +563,21 @@ fn load_group_seq(path: &Option<std::path::PathBuf>) -> Option<u64> {
     Some(seq)
 }
 
-/// Persist the high-water group sequence (best-effort, no fsync — mirrors the
-/// cursor file). Called on each group creation.
+/// Write a small state file atomically: write to a sibling tmp file, then
+/// rename over the target. A crash mid-write can no longer leave a truncated
+/// or empty file behind (plain fs::write truncates before writing). Best
+/// effort, no fsync — losing the very last update costs at most one group /
+/// a few seconds of cursor.
+fn write_state_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Persist the high-water group sequence. Called on each group creation.
 fn persist_group_seq(path: &Option<std::path::PathBuf>, seq: u64) {
     let Some(path) = path else { return };
-    if let Err(err) = std::fs::write(path, format!("{seq}\n")) {
+    if let Err(err) = write_state_file(path, &format!("{seq}\n")) {
         tracing::warn!(?err, path = %path.display(), "failed to persist group sequence");
     }
 }
@@ -639,8 +649,13 @@ fn build_lite_publisher(
     window_secs: u64,
 ) -> anyhow::Result<FramePublisher> {
     // The disk store is always on for Lite serve/relay (mirrors indigo's
-    // always-persisting relay); the directory has a default.
+    // always-persisting relay); the directory has a default. Log the resolved
+    // path: the default is *relative* (data/atmoq/store), and a container
+    // without a volume mount silently loses it on every deploy.
     let store = Some(Arc::new(Mutex::new(GroupStore::open(group_store_dir)?)));
+    let resolved =
+        std::fs::canonicalize(group_store_dir).unwrap_or_else(|_| group_store_dir.to_path_buf());
+    tracing::info!(dir = %resolved.display(), "group store open");
     // The seq sidecar records the *in-progress* group's sequence (persisted at
     // creation), which the store alone can't know: groups reach the store only
     // on rotation, so store.max_seq() is the last *completed* group. Without
@@ -667,6 +682,18 @@ fn build_lite_publisher(
         Some(f) => Some(store_max.map_or(f, |m| f.max(m))),
         None => store_max.map(|m| m + 1),
     };
+    if seed.is_none() {
+        // Not fatal (first boot looks exactly like this), but loud: if this
+        // relay has run before, the store dir was lost — likely a container
+        // deploy without a volume — and consumers resuming from a high group
+        // cursor will silently receive nothing until the live sequence
+        // catches back up past their cursor.
+        tracing::warn!(
+            dir = %resolved.display(),
+            "group store is empty — group sequence starts at 0 \
+             (if this relay ran before, the store dir was not persisted)"
+        );
+    }
     let group = make_first_group(&mut track, seed, &group_seq_file)?;
     Ok(FramePublisher::Lite {
         track,
@@ -953,18 +980,29 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
 type SharedSeq = std::sync::Arc<std::sync::atomic::AtomicI64>;
 
-/// Cursor file takes precedence over the flag.
+/// Cursor file takes precedence over the flag. An unreadable, empty, or
+/// corrupt cursor file falls back to the flag with a loud warning — bricking
+/// startup over a state file would turn one bad write into a crash loop.
 fn load_initial_cursor(
     cursor_file: &Option<std::path::PathBuf>,
     cursor: Option<i64>,
 ) -> anyhow::Result<SharedSeq> {
     let initial = match cursor_file {
         Some(path) => match std::fs::read_to_string(path) {
-            Ok(s) => {
-                let c = s.trim().parse::<i64>()?;
-                tracing::info!(cursor = c, path = %path.display(), "resuming from cursor file");
-                Some(c)
-            }
+            Ok(s) => match s.trim().parse::<i64>() {
+                Ok(c) => {
+                    tracing::info!(cursor = c, path = %path.display(), "resuming from cursor file");
+                    Some(c)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        path = %path.display(),
+                        "cursor file is corrupt; falling back to --cursor"
+                    );
+                    cursor
+                }
+            },
             Err(_) => cursor,
         },
         None => cursor,
@@ -1067,7 +1105,7 @@ fn persist_cursor(path: &Option<std::path::PathBuf>, last_seq: &std::sync::atomi
     if seq < 0 {
         return;
     }
-    if let Err(err) = std::fs::write(path, format!("{seq}\n")) {
+    if let Err(err) = write_state_file(path, &format!("{seq}\n")) {
         tracing::warn!(?err, path = %path.display(), "failed to persist cursor");
     }
 }
