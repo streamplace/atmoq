@@ -112,6 +112,7 @@ export class Session {
 /** A stream of frames for one subscribed track. */
 export class Subscription {
   private readonly track: Moq.Track;
+  private group: Moq.Group | undefined;
   private closed = false;
 
   constructor(track: Moq.Track) {
@@ -124,14 +125,40 @@ export class Subscription {
    * (CBOR header object + CBOR payload object), identical to a subscribeRepos
    * WebSocket message.
    *
+   * Every frame of every group is delivered, in order: each group is drained
+   * to completion before advancing to the next (matching the Rust consumer's
+   * next_group/read_frame loop). We deliberately avoid Track.readFrameSequence,
+   * whose latest-wins semantics discard the un-read tail of an older group the
+   * moment a newer one is buffered — correct for live video, silent data loss
+   * for a firehose.
+   *
    * Returns `undefined` when the subscription ends (track closed, relay
-   * disconnected, etc.).
+   * disconnected, etc.). Throws if the track or the current group is aborted
+   * with an error — a mid-group abort means frames were lost, and a lossless
+   * consumer should see that as a failure, not a silent gap.
    */
   async readFrame(): Promise<
     { data: Uint8Array; group: number; frame: number } | undefined
   > {
-    // readFrameSequence returns { group, frame, data } or undefined when done.
-    return this.track.readFrameSequence();
+    for (;;) {
+      if (!this.group) {
+        // Sequence-ordered: a group arriving late (seq <= last delivered) is
+        // skipped, same as the Rust model's monotonic next_group().
+        this.group = await this.track.nextGroupOrdered();
+        if (!this.group) return undefined;
+      }
+      const next = await this.group.readFrameSequence();
+      if (next) {
+        return {
+          data: next.data,
+          group: this.group.sequence,
+          frame: next.sequence,
+        };
+      }
+      // Clean end of group: release it and move to the next.
+      this.group.close();
+      this.group = undefined;
+    }
   }
 
   /**
@@ -164,6 +191,8 @@ export class Subscription {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.group?.close();
+    this.group = undefined;
     this.track.close();
   }
 }
