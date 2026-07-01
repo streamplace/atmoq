@@ -11,7 +11,12 @@
 
 import * as Moq from "@moq/net";
 import { DefaultBroadcast, DefaultTrack } from "./constants.js";
-import { decodeFrame, type AtSyncMessage } from "./frame.js";
+import {
+  decodeFrame,
+  InvalidDrislError,
+  InvalidFrameError,
+  type AtSyncMessage,
+} from "./frame.js";
 
 // Install a WebTransport polyfill on Node, where globalThis.WebTransport is
 // undefined. We try @fails-components/webtransport (the standard Node option);
@@ -164,6 +169,12 @@ export class Subscription {
   /**
    * Read the next decoded at-sync message. Convenience wrapper that decodes
    * the raw frame via {@link decodeFrame}.
+   *
+   * atmoq is DRISL-strict: a frame that isn't valid DRISL is rejected with an
+   * {@link InvalidDrislError} (an {@link InvalidFrameError} for frames that
+   * are valid DRISL but not at-sync-shaped). These are *recoverable*: the bad
+   * frame has been consumed and the subscription stays usable, so a caller
+   * that wants to reject-and-continue can catch and call again.
    */
   async readMessage(): Promise<AtSyncMessage | undefined> {
     const raw = await this.readFrame();
@@ -174,16 +185,27 @@ export class Subscription {
   /**
    * Async iterator over decoded at-sync messages. Ends when the subscription
    * closes.
+   *
+   * A rejected frame ({@link InvalidDrislError} / {@link InvalidFrameError})
+   * terminates the loop with that error but leaves the subscription open —
+   * the bad frame is already consumed, so the caller can log the rejection
+   * and start a new `for await` on the same subscription to continue from the
+   * next frame. Any other error (or a clean end) closes the subscription.
    */
   async *[Symbol.asyncIterator](): AsyncIterableIterator<AtSyncMessage> {
+    let recoverable = false;
     try {
       for (;;) {
         const msg = await this.readMessage();
         if (msg === undefined) break;
         yield msg;
       }
+    } catch (err) {
+      recoverable =
+        err instanceof InvalidDrislError || err instanceof InvalidFrameError;
+      throw err;
     } finally {
-      this.close();
+      if (!recoverable) this.close();
     }
   }
 

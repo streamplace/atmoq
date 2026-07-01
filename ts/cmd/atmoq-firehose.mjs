@@ -18,8 +18,13 @@
 //   --insecure           allow self-signed certs (Node polyfill only)
 //   -h, --help           show this help
 
-import { connect, parseCarBlocks } from "@streamplace/atmoq";
-import { decode, encode } from "@atproto/lex-cbor";
+import {
+  connect,
+  parseCarBlocks,
+  InvalidDrislError,
+  InvalidFrameError,
+} from "@streamplace/atmoq";
+import { decode } from "@atproto/lex-cbor";
 
 const args = process.argv.slice(2);
 
@@ -130,44 +135,67 @@ async function main() {
       if (flags.limit > 0 && count >= flags.limit) break;
     }
   } else {
-    for await (const msg of sub) {
-      if (flags.ops) {
-        // goat-style --ops: one line per record op in #commit, with the
-        // record decoded from the message's CAR blocks.
-        if (msg.header.t === "#commit") {
-          const opsPrinted = printOps(msg.payload);
-          count += opsPrinted;
-        }
-      } else if (flags.json) {
-        console.log(
-          JSON.stringify(
-            {
-              group: msg.group,
-              frame: msg.frame,
-              type: msg.header.t,
-              header: cborToJson(msg.header),
-              seq: peekPayloadSeq(msg.payload),
-              payloadBytes: msg.payload.length,
-            },
-            null,
-            2,
-          ),
-        );
-        count++;
-      } else {
-        // Default: one compact JSON line per frame, like the Go CLI.
-        console.log(
-          JSON.stringify({
-            group: msg.group,
-            type: msg.header.t,
-            seq: peekPayloadSeq(msg.payload),
-            bytes: msg.payload.length,
-          }),
-        );
-        count++;
-      }
+    let rejected = 0;
+    let done = false;
+    while (!done) {
+      try {
+        for await (const msg of sub) {
+          if (flags.ops) {
+            // goat-style --ops: one line per record op in #commit, with the
+            // record decoded from the message's CAR blocks.
+            if (msg.header.t === "#commit") {
+              const opsPrinted = printOps(msg.payload);
+              count += opsPrinted;
+            }
+          } else if (flags.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  group: msg.group,
+                  frame: msg.frame,
+                  type: msg.header.t,
+                  header: cborToJson(msg.header),
+                  seq: peekPayloadSeq(msg.payload),
+                  payloadBytes: msg.payload.length,
+                },
+                null,
+                2,
+              ),
+            );
+            count++;
+          } else {
+            // Default: one compact JSON line per frame, like the Go CLI.
+            console.log(
+              JSON.stringify({
+                group: msg.group,
+                type: msg.header.t,
+                seq: peekPayloadSeq(msg.payload),
+                bytes: msg.payload.length,
+              }),
+            );
+            count++;
+          }
 
-      if (flags.limit > 0 && count >= flags.limit) break;
+          if (flags.limit > 0 && count >= flags.limit) break;
+        }
+        done = true;
+      } catch (err) {
+        // atmoq is DRISL-strict: a frame that isn't valid DRISL is rejected.
+        // The frame is already consumed and the subscription stays open, so we
+        // log the rejection and keep reading from the next frame.
+        if (
+          err instanceof InvalidDrislError ||
+          err instanceof InvalidFrameError
+        ) {
+          rejected++;
+          console.error(`atmoq-firehose: rejected frame: ${err.message}`);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (rejected > 0) {
+      console.error(`atmoq-firehose: rejected ${rejected} invalid frame(s)`);
     }
   }
 
