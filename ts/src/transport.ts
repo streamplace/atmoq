@@ -97,6 +97,14 @@ export class Session {
     // built by Path.from); subscribe() on the returned Broadcast takes a track
     // name + priority. We use priority 0 (default) — the firehose is a single
     // track, so prioritization is irrelevant.
+    //
+    // Known disparity: the SUBSCRIBE goes out with ordered=false, because
+    // @moq/net 0.1.6 hardcodes it (subscribe() only exposes priority). The
+    // Rust and Go clients send ordered=true. Against `atmoq serve` this is
+    // inert (the publisher serves every group regardless), but a generic
+    // relay honoring the flag may skip old groups for us under congestion.
+    // Needs an upstream @moq/net API addition; not worth monkey-patching a
+    // prototype shared with other @moq/net users in the same process.
     const path = Moq.Path.from(broadcast);
     const broadcastObj = this.established.consume(path);
     const trackObj = broadcastObj.subscribe(track, 0);
@@ -263,8 +271,42 @@ export async function connect(
     props.transport = new WebTransport(parsed, { rejectUnauthorized: false });
   }
 
+  if (props.transport) {
+    // @moq/net's custom-transport path (connectTransport) neither awaits
+    // `ready` nor attaches a catch to `closed`, and it chains bare .then()s
+    // off `closed` internally — with the Node polyfill, which *rejects* both
+    // on connection failure or abnormal close, each of those chains is a
+    // process-killing unhandled rejection. Shadow `closed` with a promise
+    // that settles instead, and await `ready` ourselves so a refused
+    // connection surfaces as a clean error here rather than a crash.
+    guardTransport(props.transport);
+    try {
+      await props.transport.ready;
+    } catch (err) {
+      throw new Error(
+        `atmoq: WebTransport connection to ${parsed} failed: ${
+          err instanceof Error ? err.message : err
+        }`,
+        { cause: err },
+      );
+    }
+  }
+
   const established = await Moq.Connection.connect(parsed, props);
   return new Session(established);
+}
+
+/**
+ * Replace a WebTransport's `closed` promise with one that settles (never
+ * rejects) so downstream `.then()` chains without a catch can't become
+ * unhandled rejections. The resolved value carries the close reason either way.
+ */
+function guardTransport(wt: WebTransport): void {
+  const settled = wt.closed.catch((err) => ({
+    closeCode: 0,
+    reason: err instanceof Error ? err.message : String(err),
+  }));
+  Object.defineProperty(wt, "closed", { value: settled, configurable: true });
 }
 
 /**
