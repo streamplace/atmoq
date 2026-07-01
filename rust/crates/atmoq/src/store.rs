@@ -9,17 +9,25 @@
 //! - it is the source a deeper disk-served replay window would read from
 //!   (Tier B; needs a moq-net publisher hook — see docs/design/replay.md).
 //!
-//! Record format (little-endian) within a segment file:
-//!   [group_seq: u64][created_ms: u64][frame_count: u32]
-//!   then frame_count × ([frame_len: u32][frame bytes])
+//! Record format (little-endian) within a `.seg2` segment file:
+//!   [group_seq: u64][created_ms: u64][frame_count: u32][body_len: u32]
+//!   then frame_count × ([frame_len: u32][frame bytes]), body_len bytes total
 //!
-//! Segments are named `<first_seq:020>.seg` so they sort lexicographically by
-//! starting sequence. GC deletes whole segments once their newest group is older
-//! than the retention window.
+//! `body_len` lets the startup scan skip a whole record with one bounds check
+//! instead of walking every frame — at the 72h retention default a store
+//! holds hundreds of millions of frames, and the v1 format's
+//! read-4-bytes-then-seek per frame turned restart into minutes of syscalls.
+//! Legacy `.seg` segments (v1: same header without body_len) remain readable;
+//! the writer only appends to `.seg2`, rotating early if the newest segment
+//! is v1.
+//!
+//! Segments are named `<first_seq:020>.seg2` so they sort lexicographically by
+//! starting sequence. GC deletes whole segments once their newest group is
+//! older than the retention window.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -28,11 +36,16 @@ use bytes::Bytes;
 /// Rotate to a new segment once the current one passes this size.
 const SEGMENT_TARGET_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Where a group lives on disk.
+const V1_HEADER: u64 = 20;
+const V2_HEADER: u64 = 24;
+
+/// Where a group lives on disk. `created_ms` is duplicated here so time-window
+/// queries (groups_since) never touch the disk.
 #[derive(Clone, Copy)]
 struct Location {
     segment: usize, // index into `segments`
     offset: u64,
+    created_ms: u64,
 }
 
 struct Segment {
@@ -40,6 +53,7 @@ struct Segment {
     first_seq: u64,
     newest_ms: u64, // created_ms of the newest group in this segment
     bytes: u64,
+    v2: bool,
 }
 
 /// A disk-backed group store. Single-writer (the pump loop); reads recover the
@@ -95,10 +109,12 @@ impl GroupStore {
         let seg_idx = self.segments.len() - 1;
         let offset = self.segments[seg_idx].bytes;
 
-        let mut rec = Vec::with_capacity(20);
+        let body_len: u64 = frames.iter().map(|f| 4 + f.len() as u64).sum();
+        let mut rec = Vec::with_capacity(V2_HEADER as usize + body_len as usize);
         rec.extend_from_slice(&seq.to_le_bytes());
         rec.extend_from_slice(&created_ms.to_le_bytes());
         rec.extend_from_slice(&(frames.len() as u32).to_le_bytes());
+        rec.extend_from_slice(&(body_len as u32).to_le_bytes());
         for f in frames {
             rec.extend_from_slice(&(f.len() as u32).to_le_bytes());
             rec.extend_from_slice(f);
@@ -119,6 +135,7 @@ impl GroupStore {
             Location {
                 segment: seg_idx,
                 offset,
+                created_ms,
             },
         );
         self.max_seq = Some(self.max_seq.map_or(seq, |m| m.max(seq)));
@@ -130,10 +147,11 @@ impl GroupStore {
         let Some(loc) = self.index.get(&seq).copied() else {
             return Ok(None);
         };
-        let path = &self.segments[loc.segment].path;
-        let mut f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let seg = &self.segments[loc.segment];
+        let mut f =
+            File::open(&seg.path).with_context(|| format!("opening {}", seg.path.display()))?;
         f.seek(SeekFrom::Start(loc.offset))?;
-        let (rec_seq, _ms, frames) = read_record(&mut f)?
+        let (rec_seq, _ms, frames) = read_record(&mut f, seg.v2)?
             .ok_or_else(|| anyhow::anyhow!("truncated record for group {seq}"))?;
         anyhow::ensure!(rec_seq == seq, "index/segment mismatch: {rec_seq} != {seq}");
         Ok(Some(frames))
@@ -141,24 +159,14 @@ impl GroupStore {
 
     /// Group sequences whose group is newer than `cutoff_ms`, ascending — the
     /// set to reload into the live track on startup (the in-window groups).
+    /// Served entirely from the in-memory index.
     pub fn groups_since(&self, cutoff_ms: u64) -> Result<Vec<u64>> {
-        let mut out = Vec::new();
-        for (&seq, loc) in &self.index {
-            let path = &self.segments[loc.segment].path;
-            let mut f = File::open(path)?;
-            f.seek(SeekFrom::Start(loc.offset))?;
-            // Read just the header to get created_ms cheaply.
-            let mut hdr = [0u8; 20];
-            if f.read_exact(&mut hdr).is_err() {
-                continue;
-            }
-            let ms = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
-            if ms >= cutoff_ms {
-                out.push(seq);
-            }
-        }
-        out.sort_unstable();
-        Ok(out)
+        Ok(self
+            .index
+            .iter()
+            .filter(|(_, loc)| loc.created_ms >= cutoff_ms)
+            .map(|(&seq, _)| seq)
+            .collect())
     }
 
     /// Delete whole segments whose newest group is older than `cutoff_ms`. The
@@ -189,14 +197,16 @@ impl GroupStore {
     fn ensure_writer(&mut self, next_seq: u64) -> Result<()> {
         let rotate = match self.segments.last() {
             None => true,
-            Some(seg) => seg.bytes >= self.segment_target,
+            // Also rotate away from a legacy v1 segment: formats never mix
+            // within one file.
+            Some(seg) => seg.bytes >= self.segment_target || !seg.v2,
         };
         if rotate {
             // Finish the previous writer.
             if let Some(mut w) = self.writer.take() {
                 w.flush()?;
             }
-            let path = self.dir.join(format!("{next_seq:020}.seg"));
+            let path = self.dir.join(format!("{next_seq:020}.seg2"));
             let file = OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -207,6 +217,7 @@ impl GroupStore {
                 first_seq: next_seq,
                 newest_ms: 0,
                 bytes: 0,
+                v2: true,
             });
             self.writer = Some(BufWriter::new(file));
         } else if self.writer.is_none() {
@@ -218,38 +229,67 @@ impl GroupStore {
         Ok(())
     }
 
-    /// Rebuild segments + index by scanning the directory.
+    /// Rebuild segments + index by scanning the directory. `.seg2` records are
+    /// skipped whole via the header's body_len; legacy `.seg` records are
+    /// walked frame-by-frame (buffered).
     fn scan(&mut self) -> Result<()> {
         let mut paths: Vec<PathBuf> = fs::read_dir(&self.dir)?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().map(|x| x == "seg").unwrap_or(false))
+            .filter(|p| {
+                p.extension()
+                    .map(|x| x == "seg" || x == "seg2")
+                    .unwrap_or(false)
+            })
             .collect();
-        paths.sort();
+        // Sort by segment name (first sequence), not full path string, so a
+        // .seg and .seg2 pair orders by sequence.
+        paths.sort_by_key(|p| p.file_stem().map(|s| s.to_os_string()));
 
         for path in paths {
-            let mut f = File::open(&path)?;
-            let len = f.metadata()?.len();
+            let v2 = path.extension().map(|x| x == "seg2").unwrap_or(false);
+            let file = File::open(&path)?;
+            let len = file.metadata()?.len();
+            let mut r = BufReader::new(file);
+            let header_len = if v2 { V2_HEADER } else { V1_HEADER };
             let mut offset = 0u64;
             let mut first_seq = None;
             let mut newest_ms = 0u64;
             loop {
-                match read_record_header(&mut f)? {
-                    None => break,
-                    Some((seq, ms, body_len)) => {
-                        first_seq.get_or_insert(seq);
-                        newest_ms = ms;
-                        self.index.insert(
-                            seq,
-                            Location {
-                                segment: self.segments.len(),
-                                offset,
-                            },
-                        );
-                        self.max_seq = Some(self.max_seq.map_or(seq, |m| m.max(seq)));
-                        offset += 20 + body_len;
-                        f.seek(SeekFrom::Start(offset))?;
-                    }
+                if offset + header_len > len {
+                    break; // clean EOF or torn header
                 }
+                let mut hdr = [0u8; V2_HEADER as usize];
+                let hdr = &mut hdr[..header_len as usize];
+                r.read_exact(hdr)?;
+                let seq = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
+                let ms = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
+                let count = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as u64;
+                let body_len = if v2 {
+                    let claimed = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as u64;
+                    if offset + header_len + claimed > len {
+                        break; // torn body
+                    }
+                    r.seek_relative(claimed as i64)?;
+                    claimed
+                } else {
+                    // v1: walk the frames to find the record's extent.
+                    match walk_v1_body(&mut r, offset + header_len, count, len)? {
+                        Some(b) => b,
+                        None => break, // torn body
+                    }
+                };
+                first_seq.get_or_insert(seq);
+                newest_ms = ms;
+                self.index.insert(
+                    seq,
+                    Location {
+                        segment: self.segments.len(),
+                        offset,
+                        created_ms: ms,
+                    },
+                );
+                self.max_seq = Some(self.max_seq.map_or(seq, |m| m.max(seq)));
+                offset += header_len + body_len;
             }
             // Tolerate a torn tail record (crash mid-append) — but truncate it
             // away. The writer reopens segments with O_APPEND, which writes at
@@ -258,7 +298,7 @@ impl GroupStore {
             // making all post-restart groups unreadable (and a second restart
             // would regress max_seq, re-issuing group ids for new content).
             if offset < len {
-                drop(f);
+                drop(r);
                 let file = OpenOptions::new().write(true).open(&path)?;
                 file.set_len(offset)
                     .with_context(|| format!("truncating torn tail of {}", path.display()))?;
@@ -269,22 +309,51 @@ impl GroupStore {
                 newest_ms,
                 bytes: offset,
                 path,
+                v2,
             });
         }
         Ok(())
     }
 }
 
+/// Walk a v1 record's frames (buffered, seeking over bodies) and return the
+/// body length, or None if the record runs past the end of the file (torn).
+/// `body_start` is the file offset just past the record header; `len` is the
+/// file's total length.
+fn walk_v1_body(
+    r: &mut BufReader<File>,
+    body_start: u64,
+    count: u64,
+    len: u64,
+) -> Result<Option<u64>> {
+    let mut cursor = body_start;
+    for _ in 0..count {
+        if cursor + 4 > len {
+            return Ok(None);
+        }
+        let mut lenb = [0u8; 4];
+        r.read_exact(&mut lenb)?;
+        let n = u32::from_le_bytes(lenb) as u64;
+        if cursor + 4 + n > len {
+            return Ok(None);
+        }
+        r.seek_relative(n as i64)?;
+        cursor += 4 + n;
+    }
+    Ok(Some(cursor - body_start))
+}
+
 /// Read a full record (seq, created_ms, frames) at the reader's position.
-fn read_record<R: Read>(r: &mut R) -> Result<Option<(u64, u64, Vec<Bytes>)>> {
-    let mut hdr = [0u8; 20];
-    if !read_full_or_eof(r, &mut hdr)? {
+fn read_record<R: Read>(r: &mut R, v2: bool) -> Result<Option<(u64, u64, Vec<Bytes>)>> {
+    let header_len = if v2 { V2_HEADER } else { V1_HEADER } as usize;
+    let mut hdr = [0u8; V2_HEADER as usize];
+    if !read_full_or_eof(r, &mut hdr[..header_len])? {
         return Ok(None);
     }
     let seq = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
     let ms = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
     let count = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-    let mut frames = Vec::with_capacity(count);
+    let mut frames = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
         let mut lenb = [0u8; 4];
         if !read_full_or_eof(r, &mut lenb)? {
@@ -298,32 +367,6 @@ fn read_record<R: Read>(r: &mut R) -> Result<Option<(u64, u64, Vec<Bytes>)>> {
         frames.push(Bytes::from(buf));
     }
     Ok(Some((seq, ms, frames)))
-}
-
-/// Read just a record's header and return (seq, created_ms, body_len) where
-/// body_len is the size of the frames section, so the caller can skip it.
-fn read_record_header<R: Read + Seek>(r: &mut R) -> Result<Option<(u64, u64, u64)>> {
-    let start = r.stream_position()?;
-    let mut hdr = [0u8; 20];
-    if !read_full_or_eof(r, &mut hdr)? {
-        return Ok(None);
-    }
-    let seq = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
-    let ms = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
-    let count = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-    let mut body_len = 0u64;
-    for _ in 0..count {
-        let mut lenb = [0u8; 4];
-        if !read_full_or_eof(r, &mut lenb)? {
-            // Torn tail: rewind so this partial record is ignored.
-            r.seek(SeekFrom::Start(start))?;
-            return Ok(None);
-        }
-        let n = u32::from_le_bytes(lenb) as u64;
-        body_len += 4 + n;
-        r.seek(SeekFrom::Current(n as i64))?;
-    }
-    Ok(Some((seq, ms, body_len)))
 }
 
 /// Returns Ok(true) if `buf` was fully read, Ok(false) on EOF before it filled
@@ -360,6 +403,19 @@ mod tests {
             .iter()
             .map(|s| Bytes::from(s.as_bytes().to_vec()))
             .collect()
+    }
+
+    /// Hand-encode a legacy v1 record for upgrade tests.
+    fn v1_record(seq: u64, ms: u64, parts: &[&str]) -> Vec<u8> {
+        let mut rec = Vec::new();
+        rec.extend_from_slice(&seq.to_le_bytes());
+        rec.extend_from_slice(&ms.to_le_bytes());
+        rec.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+        for p in parts {
+            rec.extend_from_slice(&(p.len() as u32).to_le_bytes());
+            rec.extend_from_slice(p.as_bytes());
+        }
+        rec
     }
 
     #[test]
@@ -416,17 +472,17 @@ mod tests {
             s.append(2, 2000, &frames(&["bb"])).unwrap();
         }
         // Simulate a crash mid-append: a partial record at the tail (a full
-        // header claiming 3 frames, but only part of the first frame).
+        // header claiming a body, but only part of it present).
         let seg = fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().path())
-            .find(|p| p.extension().map(|x| x == "seg").unwrap_or(false))
+            .find(|p| p.extension().map(|x| x == "seg2").unwrap_or(false))
             .unwrap();
         let mut torn = Vec::new();
         torn.extend_from_slice(&3u64.to_le_bytes()); // seq
         torn.extend_from_slice(&3000u64.to_le_bytes()); // created_ms
         torn.extend_from_slice(&3u32.to_le_bytes()); // frame_count
-        torn.extend_from_slice(&100u32.to_le_bytes()); // frame len...
+        torn.extend_from_slice(&312u32.to_le_bytes()); // body_len...
         torn.extend_from_slice(b"only-part"); // ...but not the bytes
         {
             let mut f = OpenOptions::new().append(true).open(&seg).unwrap();
@@ -450,6 +506,55 @@ mod tests {
         assert_eq!(s.read(1).unwrap().unwrap(), frames(&["a"]));
         assert_eq!(s.read(2).unwrap().unwrap(), frames(&["bb"]));
         assert_eq!(s.read(3).unwrap().unwrap(), frames(&["ccc"]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_v1_segments_stay_readable_and_writer_rotates_away() {
+        let dir = tmp();
+        fs::create_dir_all(&dir).unwrap();
+        // A legacy .seg file with two v1 records, as the old writer laid out.
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(&v1_record(5, 1000, &["aa", "b"]));
+        v1.extend_from_slice(&v1_record(6, 1100, &["cc"]));
+        fs::write(dir.join(format!("{:020}.seg", 5)), &v1).unwrap();
+
+        let mut s = GroupStore::open(&dir).unwrap();
+        assert_eq!(s.max_seq(), Some(6));
+        assert_eq!(s.read(5).unwrap().unwrap(), frames(&["aa", "b"]));
+        assert_eq!(s.read(6).unwrap().unwrap(), frames(&["cc"]));
+        assert_eq!(s.groups_since(1050).unwrap(), vec![6]);
+
+        // Appending rotates to a fresh .seg2 rather than mixing formats.
+        s.append(7, 1200, &frames(&["dd"])).unwrap();
+        assert_eq!(s.read(7).unwrap().unwrap(), frames(&["dd"]));
+        assert!(dir.join(format!("{:020}.seg2", 7)).exists());
+
+        // Everything survives a reopen.
+        let s2 = GroupStore::open(&dir).unwrap();
+        assert_eq!(s2.max_seq(), Some(7));
+        assert_eq!(s2.read(5).unwrap().unwrap(), frames(&["aa", "b"]));
+        assert_eq!(s2.read(7).unwrap().unwrap(), frames(&["dd"]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_v1_torn_tail_is_truncated() {
+        let dir = tmp();
+        fs::create_dir_all(&dir).unwrap();
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(&v1_record(1, 1000, &["aa"]));
+        let full = v1_record(2, 1100, &["bbbb"]);
+        v1.extend_from_slice(&full[..full.len() - 2]); // torn mid-frame
+        let path = dir.join(format!("{:020}.seg", 1));
+        fs::write(&path, &v1).unwrap();
+
+        let s = GroupStore::open(&dir).unwrap();
+        assert_eq!(s.max_seq(), Some(1));
+        assert_eq!(s.read(1).unwrap().unwrap(), frames(&["aa"]));
+        // The torn record was truncated off the file.
+        let expected = v1_record(1, 1000, &["aa"]).len() as u64;
+        assert_eq!(fs::metadata(&path).unwrap().len(), expected);
         fs::remove_dir_all(&dir).ok();
     }
 
