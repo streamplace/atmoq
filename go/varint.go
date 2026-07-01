@@ -6,6 +6,9 @@ import "io"
 // uses for every length, id, and sequence number on the wire. The two most
 // significant bits of the first byte select a 1, 2, 4, or 8 byte form.
 
+// maxUvarint is the largest value a QUIC varint can carry.
+const maxUvarint = 1<<62 - 1
+
 // appendUvarint appends x to b in QUIC varint form.
 func appendUvarint(b []byte, x uint64) []byte {
 	switch {
