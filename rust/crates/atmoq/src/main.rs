@@ -921,13 +921,15 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
     // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
-    let backfill_secs = args.backfill_window_secs;
+    let retention = Retention {
+        window_secs: args.backfill_window_secs,
+        max_bytes: args.max_store_bytes,
+    };
     pump(
         rx,
         publisher,
         args.group_size,
-        backfill_secs,
-        args.max_store_bytes,
+        retention,
         args.cursor_file,
         last_seq,
         did_router,
@@ -1010,13 +1012,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
     // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
-    let backfill_secs = args.backfill_window_secs;
+    let retention = Retention {
+        window_secs: args.backfill_window_secs,
+        max_bytes: args.max_store_bytes,
+    };
     let result = pump(
         rx,
         publisher,
         args.group_size,
-        backfill_secs,
-        args.max_store_bytes,
+        retention,
         args.cursor_file,
         last_seq,
         Some(did_router),
@@ -1091,12 +1095,20 @@ fn spawn_ingest(upstream: String, last_seq: SharedSeq) -> mpsc::Receiver<Frame> 
 
 /// Main pump: upstream frames → MoQ publisher, with seq dedupe, periodic
 /// cursor persistence, and a clean group finish on ctrl-c.
+/// Retention knobs for the disk store, applied by the pump's GC tick.
+#[derive(Clone, Copy)]
+struct Retention {
+    /// Age window in seconds (0 = no age-based GC).
+    window_secs: u64,
+    /// Total size budget in bytes (0 = unbounded).
+    max_bytes: u64,
+}
+
 async fn pump(
     mut rx: mpsc::Receiver<Frame>,
     mut publisher: FramePublisher,
     group_size: usize,
-    window_secs: u64,
-    max_store_bytes: u64,
+    retention: Retention,
     cursor_file: Option<std::path::PathBuf>,
     last_seq: SharedSeq,
     did_router: Option<DidRouter>,
@@ -1120,7 +1132,7 @@ async fn pump(
                 continue;
             }
             _ = gc_tick.tick() => {
-                publisher.gc(window_secs, max_store_bytes);
+                publisher.gc(retention.window_secs, retention.max_bytes);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
