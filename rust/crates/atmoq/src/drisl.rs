@@ -214,7 +214,7 @@ fn validate_item(data: &[u8], offset: usize, depth: usize) -> Result<usize, Dris
         }
         // simple values and floats
         7 => match initial {
-            0xf4 | 0xf5 | 0xf6 => Ok(offset + 1), // false, true, null
+            0xf4..=0xf6 => Ok(offset + 1), // false, true, null
             0xfb => {
                 // 64-bit float — the only float width DRISL allows.
                 let Some(bytes) = data.get(offset + 1..offset + 9) else {
