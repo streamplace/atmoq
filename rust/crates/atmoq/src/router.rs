@@ -26,9 +26,14 @@ use bytes::Bytes;
 
 use crate::frame::{field, Frame};
 
-/// Cap on concurrently-served per-DID tracks — a safety bound on origin
-/// memory/CPU. Distinct subscribers requesting the same DID share one track, so
-/// this counts unique watched accounts, not subscriptions.
+/// Default cap on concurrently-served per-DID tracks — a safety bound on
+/// origin memory/CPU. Distinct subscribers requesting the same DID share one
+/// track, so this counts unique watched accounts, not subscriptions.
+/// Overridable via `--max-did-tracks`. Note the cap is global, not
+/// per-session: one client can exhaust it (junk requests are cheap to hold),
+/// locking everyone else out of selective sync until it disconnects. A
+/// per-session bound needs session identity plumbed through moq-net's dynamic
+/// track requests, which it doesn't expose today.
 const MAX_DID_TRACKS: usize = 10_000;
 
 /// A per-DID track and its in-progress group, owned by the router.
@@ -36,6 +41,9 @@ struct DidTrack {
     track: moq_net::TrackProducer,
     group: moq_net::GroupProducer,
     count: usize,
+    /// Distinguishes this materialization from earlier ones of the same DID,
+    /// so a stale unused() watcher can't remove a fresh track (see below).
+    generation: u64,
 }
 
 /// Routes firehose frames to the per-DID tracks downstream consumers have
@@ -49,12 +57,19 @@ pub struct DidRouter {
 impl DidRouter {
     /// Attach to a broadcast's dynamic producer and start accepting per-DID
     /// track requests. `replay_window_secs` is applied to each per-DID track
-    /// (the in-RAM resume window, matching the aggregate track).
+    /// (the in-RAM resume window, matching the aggregate track); `max_tracks`
+    /// caps concurrently-served DIDs (0 = the default cap).
     pub fn spawn(
         mut dynamic: moq_net::BroadcastDynamic,
         group_size: usize,
         replay_window_secs: u64,
+        max_tracks: usize,
     ) -> Self {
+        let max_tracks = if max_tracks == 0 {
+            MAX_DID_TRACKS
+        } else {
+            max_tracks
+        };
         let active: Arc<Mutex<HashMap<String, DidTrack>>> = Arc::new(Mutex::new(HashMap::new()));
         let router = DidRouter {
             active: active.clone(),
@@ -62,6 +77,9 @@ impl DidRouter {
         };
 
         tokio::spawn(async move {
+            // Monotonic per-materialization id; the request loop is a single
+            // task, so a plain counter suffices.
+            let mut next_generation = 0u64;
             loop {
                 let mut producer = match dynamic.requested_track().await {
                     Ok(p) => p,
@@ -91,10 +109,12 @@ impl DidRouter {
                     }
                 };
 
+                let generation = next_generation;
+                next_generation += 1;
                 {
                     let mut map = active.lock().unwrap();
-                    if map.len() >= MAX_DID_TRACKS {
-                        tracing::warn!(%did, max = MAX_DID_TRACKS, "per-DID track cap reached; rejecting");
+                    if map.len() >= max_tracks {
+                        tracing::warn!(%did, max = max_tracks, "per-DID track cap reached; rejecting");
                         producer.abort(moq_net::Error::NotFound).ok();
                         continue;
                     }
@@ -104,6 +124,7 @@ impl DidRouter {
                             track: producer.clone(),
                             group,
                             count: 0,
+                            generation,
                         },
                     );
                 }
@@ -111,13 +132,20 @@ impl DidRouter {
 
                 // Mirror moq-net's own unused-track cleanup: when the last
                 // subscriber leaves, drop the track from our routing map (which
-                // drops the producer and closes the track).
+                // drops the producer and closes the track). Guarded by
+                // generation: without it, a subscriber leaving and a new one
+                // requesting the same DID could race, and the stale watcher
+                // would remove the *fresh* track — leaving the new subscriber
+                // attached to a track that never receives another frame.
                 let active = active.clone();
                 let watch = producer.clone();
                 tokio::spawn(async move {
                     let _ = watch.unused().await;
-                    active.lock().unwrap().remove(&did);
-                    tracing::info!(%did, "per-DID track idle; dropped");
+                    let mut map = active.lock().unwrap();
+                    if map.get(&did).is_some_and(|t| t.generation == generation) {
+                        map.remove(&did);
+                        tracing::info!(%did, "per-DID track idle; dropped");
+                    }
                 });
             }
         });
@@ -129,11 +157,13 @@ impl DidRouter {
     /// served. A no-op (single map check) when no per-DID tracks are active or
     /// when the frame's account isn't subscribed.
     pub fn route(&self, raw: &[u8]) {
-        let mut map = self.active.lock().unwrap();
-        if map.is_empty() {
+        if self.active.lock().unwrap().is_empty() {
             return;
         }
+        // Decode outside the lock — this runs in the pump hot path for every
+        // frame whenever any per-DID track is active.
         let Some(did) = event_did(raw) else { return };
+        let mut map = self.active.lock().unwrap();
         let Some(track) = map.get_mut(&did) else {
             return;
         };

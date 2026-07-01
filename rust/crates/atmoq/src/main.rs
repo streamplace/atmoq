@@ -163,6 +163,9 @@ struct RelayArgs {
     /// resume without holding it all in RAM.
     #[arg(long, default_value_t = 259200)]
     backfill_window_secs: u64,
+    /// Cap on concurrently-served per-DID (selective-sync) tracks
+    #[arg(long, default_value_t = 10_000)]
+    max_did_tracks: usize,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -225,6 +228,9 @@ struct ServeArgs {
     /// resume without holding it all in RAM.
     #[arg(long, default_value_t = 259200)]
     backfill_window_secs: u64,
+    /// Cap on concurrently-served per-DID (selective-sync) tracks
+    #[arg(long, default_value_t = 10_000)]
+    max_did_tracks: usize,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -843,6 +849,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 broadcast.dynamic(),
                 args.group_size,
                 args.replay_window_secs,
+                args.max_did_tracks,
             );
             // auto-reconnecting session: publishing resumes after drops
             let session = client
@@ -914,6 +921,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         broadcast.dynamic(),
         args.group_size,
         args.replay_window_secs,
+        args.max_did_tracks,
     );
 
     // human-facing web frontend: :80 redirect + TLS landing page
