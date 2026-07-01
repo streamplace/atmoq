@@ -38,7 +38,10 @@ RUN sed -i '/util\/ssrf/d; /Transport:.*PublicOnlyTransport/d' cmd/relay/relay/h
 COPY go /atmoq-go
 RUN cd /atmoq-go && go build -o /out/atmoq-firehose-go ./cmd/atmoq-firehose
 
-FROM node:22-bookworm
+# trixie (glibc >= 2.38): the TS client's prebuilt quiche WebTransport native
+# module needs GLIBC_2.38 — on bookworm it fails to load and the polyfill
+# silently falls back to an HTTP/2 transport MoQ relays can't speak.
+FROM node:22-trixie
 COPY --from=gobuild /out/relay /out/atmoq-firehose-go /usr/local/bin/
 COPY --from=rustbuild /out/* /moq/bin/moq-relay /usr/local/bin/
 

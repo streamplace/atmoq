@@ -197,18 +197,24 @@ impl GroupStore {
             .collect())
     }
 
-    /// Delete whole segments whose newest group is older than `cutoff_ms`. The
-    /// active (last) segment is never deleted.
-    pub fn gc(&mut self, cutoff_ms: u64) -> Result<usize> {
+    /// Delete whole segments whose newest group is older than `cutoff_ms`, and
+    /// (when `max_bytes > 0`) oldest-first until total size fits under
+    /// `max_bytes`. The active (last) segment is never deleted.
+    pub fn gc(&mut self, cutoff_ms: u64, max_bytes: u64) -> Result<usize> {
         let mut removed = 0;
-        // Keep the last segment (it's the write target); drop older fully-expired ones.
+        let mut total: u64 = self.segments.iter().map(|s| s.bytes).sum();
+        // Keep the last segment (it's the write target); drop older segments
+        // that are fully expired or that push the store over its size budget.
         while self.segments.len() > 1 {
             let seg = &self.segments[0];
-            if seg.newest_ms >= cutoff_ms {
+            let expired = seg.newest_ms < cutoff_ms;
+            let oversize = max_bytes > 0 && total > max_bytes;
+            if !expired && !oversize {
                 break; // segments are in ascending time order; nothing older follows
             }
             let first = seg.first_seq;
             let next_first = self.segments[1].first_seq;
+            total = total.saturating_sub(seg.bytes);
             fs::remove_file(&seg.path).ok();
             self.index
                 .retain(|&seq, _| seq < first || seq >= next_first);
@@ -477,7 +483,7 @@ mod tests {
 
         // GC everything older than 2500ms: group 1 (1000) and 2 (2000) expire,
         // but the active (last) segment holding group 3 is always kept.
-        let removed = s.gc(2500).unwrap();
+        let removed = s.gc(2500, 0).unwrap();
         assert_eq!(removed, 2);
         assert!(s.read(1).unwrap().is_none());
         assert!(s.read(2).unwrap().is_none());
@@ -583,6 +589,28 @@ mod tests {
         // The torn record was truncated off the file.
         let expected = v1_record(1, 1000, &["aa"]).len() as u64;
         assert_eq!(fs::metadata(&path).unwrap().len(), expected);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gc_enforces_size_budget() {
+        let dir = tmp();
+        // One segment per append; each record is 24 (header) + 4 + 8 = 36 bytes.
+        let mut s = GroupStore::open_with_segment_target(&dir, 1).unwrap();
+        s.append(1, 1000, &frames(&["aaaaaaaa"])).unwrap();
+        s.append(2, 2000, &frames(&["bbbbbbbb"])).unwrap();
+        s.append(3, 3000, &frames(&["cccccccc"])).unwrap();
+
+        // Nothing is age-expired (cutoff 0), but the budget only fits two
+        // segments: the oldest is dropped, the active segment always kept.
+        let removed = s.gc(0, 72).unwrap();
+        assert_eq!(removed, 1);
+        assert!(s.read(1).unwrap().is_none());
+        assert_eq!(s.read(2).unwrap().unwrap(), frames(&["bbbbbbbb"]));
+        assert_eq!(s.read(3).unwrap().unwrap(), frames(&["cccccccc"]));
+
+        // Unlimited budget with no age cutoff removes nothing further.
+        assert_eq!(s.gc(0, 0).unwrap(), 0);
         fs::remove_dir_all(&dir).ok();
     }
 

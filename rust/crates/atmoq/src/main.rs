@@ -172,6 +172,11 @@ struct RelayArgs {
     /// Cap on concurrently-served per-DID (selective-sync) tracks
     #[arg(long, default_value_t = 10_000)]
     max_did_tracks: usize,
+    /// Cap on total group-store disk usage in bytes (0 = age-based GC only).
+    /// When exceeded, the oldest segments are dropped first, shrinking the
+    /// deep-replay window rather than filling the disk.
+    #[arg(long, default_value_t = 0)]
+    max_store_bytes: u64,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -237,6 +242,11 @@ struct ServeArgs {
     /// Cap on concurrently-served per-DID (selective-sync) tracks
     #[arg(long, default_value_t = 10_000)]
     max_did_tracks: usize,
+    /// Cap on total group-store disk usage in bytes (0 = age-based GC only).
+    /// When exceeded, the oldest segments are dropped first, shrinking the
+    /// deep-replay window rather than filling the disk.
+    #[arg(long, default_value_t = 0)]
+    max_store_bytes: u64,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -761,12 +771,23 @@ impl FramePublisher {
                     *count = 0;
                     // Persist the completed group to disk before recording the
                     // new sequence, so the store never advertises a group it
-                    // hasn't durably stored.
+                    // hasn't durably stored. A store failure (full disk, bad
+                    // volume) degrades replay but must not kill the relay —
+                    // live fan-out still works; the missed groups are a gap
+                    // consumers repair via PDS re-sync.
                     if let Some(store) = store {
-                        store
-                            .lock()
-                            .unwrap()
-                            .append(finished_seq, now_ms(), group_frames)?;
+                        if let Err(err) =
+                            store
+                                .lock()
+                                .unwrap()
+                                .append(finished_seq, now_ms(), group_frames)
+                        {
+                            tracing::error!(
+                                ?err,
+                                sequence = finished_seq,
+                                "failed to persist group; replay window degraded"
+                            );
+                        }
                         group_frames.clear();
                     }
                     // Persist on creation (not finish): a consumer only resumes
@@ -782,17 +803,23 @@ impl FramePublisher {
         }
     }
 
-    /// Drop stored groups older than the replay window (best-effort).
-    fn gc(&mut self, window_secs: u64) {
+    /// Drop stored groups older than the replay window and/or beyond the size
+    /// budget (best-effort). `window_secs == 0` disables age GC; `max_bytes ==
+    /// 0` disables the size bound.
+    fn gc(&mut self, window_secs: u64, max_bytes: u64) {
         if let FramePublisher::Lite {
             store: Some(store), ..
         } = self
         {
-            if window_secs == 0 {
+            if window_secs == 0 && max_bytes == 0 {
                 return;
             }
-            let cutoff = now_ms().saturating_sub(window_secs * 1000);
-            if let Err(err) = store.lock().unwrap().gc(cutoff) {
+            let cutoff = if window_secs > 0 {
+                now_ms().saturating_sub(window_secs * 1000)
+            } else {
+                0 // nothing expires by age
+            };
+            if let Err(err) = store.lock().unwrap().gc(cutoff, max_bytes) {
                 tracing::warn!(?err, "group store gc failed");
             }
         }
@@ -813,12 +840,17 @@ impl FramePublisher {
                 // content) on the next start. An unclean shutdown still loses
                 // these frames (they're only stored on rotation), but the
                 // sidecar seq file guarantees the sequence is never reused.
+                // Best-effort: a store failure here must not block shutdown.
                 if let Some(store) = &store {
                     if !group_frames.is_empty() {
-                        store
-                            .lock()
-                            .unwrap()
-                            .append(group.sequence, now_ms(), &group_frames)?;
+                        if let Err(err) =
+                            store
+                                .lock()
+                                .unwrap()
+                                .append(group.sequence, now_ms(), &group_frames)
+                        {
+                            tracing::error!(?err, "failed to flush final group to store");
+                        }
                     }
                 }
                 group.finish()?;
@@ -895,6 +927,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
         publisher,
         args.group_size,
         backfill_secs,
+        args.max_store_bytes,
         args.cursor_file,
         last_seq,
         did_router,
@@ -983,6 +1016,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         publisher,
         args.group_size,
         backfill_secs,
+        args.max_store_bytes,
         args.cursor_file,
         last_seq,
         Some(did_router),
@@ -1062,6 +1096,7 @@ async fn pump(
     mut publisher: FramePublisher,
     group_size: usize,
     window_secs: u64,
+    max_store_bytes: u64,
     cursor_file: Option<std::path::PathBuf>,
     last_seq: SharedSeq,
     did_router: Option<DidRouter>,
@@ -1085,7 +1120,7 @@ async fn pump(
                 continue;
             }
             _ = gc_tick.tick() => {
-                publisher.gc(window_secs);
+                publisher.gc(window_secs, max_store_bytes);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
