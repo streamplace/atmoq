@@ -1,0 +1,10 @@
+# Keep host build artifacts out of docker build contexts (repo root is the
+# context for tests/e2e/Dockerfile and rust/Dockerfile).
+target/
+rust/target/
+ts/node_modules/
+ts/dist/
+tests/e2e/node_modules/
+tests/e2e/dev-env/node_modules/
+tests/e2e/dev-env/dist/
+.git/

@@ -13,9 +13,10 @@
 //   --track <name>       track name (default: atproto)
 //   --limit <n>          exit after N frames (0 = run forever)
 //   --ops                print one line per record op in #commit (goat --ops)
-//   --raw                print raw frame bytes as base64 (one per line)
+//   --raw                one JSON line per frame with base64 raw bytes
 //   --json               pretty-print decoded header + payload as JSON
 //   --insecure           allow self-signed certs (Node polyfill only)
+//   --idle-ms <n>        exit after N ms without a frame (--raw path)
 //   -h, --help           show this help
 
 import {
@@ -37,6 +38,7 @@ function parseFlags(args) {
     raw: false,
     json: false,
     insecure: false,
+    idleMs: 0,
     help: false,
     positional: [],
   };
@@ -65,6 +67,9 @@ function parseFlags(args) {
       case "--insecure":
         flags.insecure = true;
         break;
+      case "--idle-ms":
+        flags.idleMs = parseInt(args[++i], 10);
+        break;
       case "--help":
       case "-h":
         flags.help = true;
@@ -91,9 +96,10 @@ Flags:
   --track <name>       track name (default: atproto)
   --limit <n>          exit after N frames (0 = run forever)
   --ops                print one line per record op in #commit (goat --ops)
-  --raw                print raw frame bytes as base64
+  --raw                one JSON line per frame with base64 raw bytes
   --json               pretty-print decoded header + payload as JSON
   --insecure           allow self-signed certs (Node polyfill only)
+  --idle-ms <n>        exit after N ms without a frame (--raw path; 0 = never)
   -h, --help           show this help
 
 Examples:
@@ -124,13 +130,33 @@ async function main() {
 
   let count = 0;
 
+  // Optional idle timeout (like the Rust CLI's --idle-ms): resolve undefined
+  // if no frame arrives within the window, ending the capture cleanly.
+  const withIdle = (promise) => {
+    if (!flags.idleMs) return promise;
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(undefined), flags.idleMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
+
   // --raw wants the original undecoded bytes; use readFrame() for that path.
   // Otherwise use the decoded async iterator.
   if (flags.raw) {
     for (;;) {
-      const frame = await sub.readFrame();
+      const frame = await withIdle(sub.readFrame());
       if (!frame) break;
-      console.log(Buffer.from(frame.data).toString("base64"));
+      // JSONL with a base64 `raw` field — the shape the e2e diff harness and
+      // the Rust CLI's --raw output share.
+      console.log(
+        JSON.stringify({
+          group: frame.group,
+          raw: Buffer.from(frame.data).toString("base64"),
+        }),
+      );
       count++;
       if (flags.limit > 0 && count >= flags.limit) break;
     }
