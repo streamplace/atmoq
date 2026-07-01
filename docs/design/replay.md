@@ -59,15 +59,28 @@ mismatch — fine for prod (real certs), worth fixing for local dev.
 
 ## Phase 2 — on disk (implemented: Tier A + Tier B)
 
-- **Durable, monotonic group IDs across restart — DONE.** `--group-seq-file`
-  persists the high-water group seq; the first group after restart is seeded at
-  `seed + 1` via `create_group(Group{ sequence })`. Persisted on creation so a
-  sequence is never reused for different content. Verified: a run ending at group
-  940 continued at 1369 (not 0) after restart.
+- **Durable, monotonic group IDs across restart — DONE.** The in-progress
+  group's sequence is persisted at creation to a sidecar file, defaulting to
+  `<group-store-dir>/group_seq` (`--group-seq-file` overrides the location);
+  the restart seed is `max(sidecar, store high water)` and the first group is
+  `seed + 1`, so a sequence is never reused for different content — including
+  the in-progress group, which the store alone can't know about (groups reach
+  the store only on rotation). A legacy store without a sidecar seeds at
+  `store high water + 1`, skipping one id (gaps are harmless, reuse is not).
+  On *clean* shutdown the in-progress group's frames are also flushed to the
+  store, so a normal restart leaves no replay gap; an unclean shutdown still
+  loses the final partial group's frames from replay (the sequence is still
+  never reused — consumers repair via PDS re-sync like any other gap).
 - **Disk-backed, group-aligned segment store — DONE** (`src/store.rs`).
   Append-only segment files keyed by group seq, index rebuilt on open, whole-
-  segment age GC (active segment kept), torn-tail tolerance, max-seq recovery.
-  Unit-tested (roundtrip+reopen, GC, time filter).
+  segment age GC (active segment kept), torn-tail *truncation* (the torn tail
+  is physically cut off before the O_APPEND reopen so index offsets stay
+  aligned), max-seq recovery. Current format is `.seg2` — the record header
+  carries body_len so the startup scan skips records whole (a 72h store scans
+  in seconds rather than walking every frame); legacy `.seg` segments stay
+  readable and the writer rotates away from them instead of mixing formats.
+  Unit-tested (roundtrip+reopen, GC, time filter, torn tails in both formats,
+  v1→v2 upgrade).
 - **Tier A — restart-survivable replay window — DONE.** `--group-store-dir`:
   each completed group is appended to disk; on startup the in-window groups are
   reloaded into the live track (original sequences, fresh cache timestamps), so a
@@ -133,6 +146,14 @@ Limits: a group GC'd off the tail of the disk window between `oldest()` and the
 read is skipped (a small gap the consumer repairs via PDS re-sync); backfill of a
 very deep resume is bounded by disk read + wire throughput, which must exceed the
 live firehose rate to converge (it does in practice — disk replay outruns realtime).
+
+**`relay`-mode caveat.** Tier B lives in the *origin's* publisher, so deep
+disk-served resume only works for subscribers connected directly to `atmoq
+serve`. Through an intermediary generic MoQ relay (`atmoq relay` publishing to
+one), the intermediary answers `SUBSCRIBE(start_group)` from its own short RAM
+cache and shares one upstream track subscription — the origin's `GroupSource`
+never sees the resume request. Deep resume through a relay chain would need
+relay-side support (or an atmoq-aware relay hop).
 
 ## Phase 3 — interop + deep tail
 

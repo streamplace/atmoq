@@ -882,7 +882,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
-    // Disk retention / deep-replay depth: defaults to the RAM window (Tier A).
+    // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
     let backfill_secs = args.backfill_window_secs;
     pump(
         rx,
@@ -970,7 +970,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
-    // Disk retention / deep-replay depth: defaults to the RAM window (Tier A).
+    // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
     let backfill_secs = args.backfill_window_secs;
     let result = pump(
         rx,

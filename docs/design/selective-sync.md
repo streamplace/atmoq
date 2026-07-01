@@ -129,6 +129,11 @@ changes.
 
 ## Status
 
-Design only (this doc). Not built. The aggregate `all` track is what ships today;
-per-DID selective sync + the browser client are the next build if/when the
-room/subset use case is wanted.
+**Built** (commit ad4edcb): `src/router.rs` serves on-demand per-DID tracks via
+moq-net's dynamic broadcast, and `atmoq firehose --wanted-dids did:...,did:...`
+consumes them. The concurrent-track bound from step 4 is configurable via
+`--max-did-tracks` (default 10,000); note it is a **global** cap, not
+per-session — a per-session bound needs session identity plumbed through
+moq-net's dynamic track requests, which it doesn't expose today. The browser
+client shipped separately as `@streamplace/atmoq` (ts/), which subscribes to
+per-DID tracks the same way (any track name in `subscribe()`).
