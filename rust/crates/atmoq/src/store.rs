@@ -251,9 +251,19 @@ impl GroupStore {
                     }
                 }
             }
-            // Tolerate a torn tail record (crash mid-append): trust the bytes we
-            // successfully parsed; `bytes` is the parsed length, not file len.
-            let _ = len;
+            // Tolerate a torn tail record (crash mid-append) — but truncate it
+            // away. The writer reopens segments with O_APPEND, which writes at
+            // the *physical* EOF; if torn bytes were left in place, every new
+            // record would land past the offset the index records for it,
+            // making all post-restart groups unreadable (and a second restart
+            // would regress max_seq, re-issuing group ids for new content).
+            if offset < len {
+                drop(f);
+                let file = OpenOptions::new().write(true).open(&path)?;
+                file.set_len(offset)
+                    .with_context(|| format!("truncating torn tail of {}", path.display()))?;
+                file.sync_all().ok();
+            }
             self.segments.push(Segment {
                 first_seq: first_seq.unwrap_or(0),
                 newest_ms,
@@ -394,6 +404,52 @@ mod tests {
         let s2 = GroupStore::open(&dir).unwrap();
         assert_eq!(s2.read(3).unwrap().unwrap(), frames(&["c"]));
         assert!(s2.read(1).unwrap().is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn torn_tail_is_truncated_and_appends_stay_readable() {
+        let dir = tmp();
+        {
+            let mut s = GroupStore::open(&dir).unwrap();
+            s.append(1, 1000, &frames(&["a"])).unwrap();
+            s.append(2, 2000, &frames(&["bb"])).unwrap();
+        }
+        // Simulate a crash mid-append: a partial record at the tail (a full
+        // header claiming 3 frames, but only part of the first frame).
+        let seg = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().map(|x| x == "seg").unwrap_or(false))
+            .unwrap();
+        let mut torn = Vec::new();
+        torn.extend_from_slice(&3u64.to_le_bytes()); // seq
+        torn.extend_from_slice(&3000u64.to_le_bytes()); // created_ms
+        torn.extend_from_slice(&3u32.to_le_bytes()); // frame_count
+        torn.extend_from_slice(&100u32.to_le_bytes()); // frame len...
+        torn.extend_from_slice(b"only-part"); // ...but not the bytes
+        {
+            let mut f = OpenOptions::new().append(true).open(&seg).unwrap();
+            f.write_all(&torn).unwrap();
+        }
+
+        // Restart 1: the torn record is ignored AND physically truncated, so
+        // new appends land exactly where the index says they do.
+        {
+            let mut s = GroupStore::open(&dir).unwrap();
+            assert_eq!(s.max_seq(), Some(2));
+            assert!(s.read(3).unwrap().is_none());
+            s.append(3, 3100, &frames(&["ccc"])).unwrap();
+            assert_eq!(s.read(3).unwrap().unwrap(), frames(&["ccc"]));
+        }
+
+        // Restart 2: everything written after the torn tail is still visible —
+        // no max_seq regression, no index/segment mismatch.
+        let s = GroupStore::open(&dir).unwrap();
+        assert_eq!(s.max_seq(), Some(3));
+        assert_eq!(s.read(1).unwrap().unwrap(), frames(&["a"]));
+        assert_eq!(s.read(2).unwrap().unwrap(), frames(&["bb"]));
+        assert_eq!(s.read(3).unwrap().unwrap(), frames(&["ccc"]));
         fs::remove_dir_all(&dir).ok();
     }
 
