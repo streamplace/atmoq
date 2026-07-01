@@ -1053,6 +1053,11 @@ async fn pump(
     did_router: Option<DidRouter>,
 ) -> anyhow::Result<()> {
     let mut total = 0u64;
+    // Consecutive frames dropped as at-or-below the cursor. A handful after a
+    // reconnect is normal replay overlap; a persistent stream of them means
+    // the upstream's sequence space regressed (relay migration/reset) and we
+    // would otherwise silently relay nothing while looking healthy.
+    let mut dropped_below_cursor = 0u64;
     let mut cursor_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     cursor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // GC the disk store on a slower cadence than cursor flushes.
@@ -1075,10 +1080,42 @@ async fn pump(
             }
         };
         let Some(frame) = frame else { break };
+        if frame.op == -1 {
+            // Upstream error frames are hop-by-hop: they describe *our*
+            // subscription (e.g. FutureCursor for an invalid cursor), not
+            // anything downstream consumers can act on. They also carry no
+            // seq, so republishing would bypass dedup and repeat the frame on
+            // every reconnect. Surface loudly and drop.
+            let detail = Frame::decode(&frame.raw).ok().and_then(|(_, payload)| {
+                atmoq::frame::field(&payload, "error")
+                    .and_then(|v| v.as_text())
+                    .map(str::to_owned)
+            });
+            tracing::error!(
+                error = ?detail,
+                "upstream sent an error frame; not republishing \
+                 (FutureCursor means the persisted cursor is invalid for this \
+                 upstream — fix or remove --cursor/--cursor-file)"
+            );
+            continue;
+        }
         if let Some(seq) = frame.seq {
             if seq <= last_seq.load(Ordering::Relaxed) {
+                dropped_below_cursor += 1;
+                if dropped_below_cursor.is_multiple_of(1000) {
+                    tracing::error!(
+                        dropped = dropped_below_cursor,
+                        cursor = last_seq.load(Ordering::Relaxed),
+                        seq,
+                        "dropping a persistent stream of frames at or below \
+                         the cursor — the upstream sequence space likely \
+                         regressed (relay migration?); restart with a fresh \
+                         --cursor / cursor file to resume relaying"
+                    );
+                }
                 continue; // reconnect replay duplicate
             }
+            dropped_below_cursor = 0;
             last_seq.store(seq, Ordering::Relaxed);
         }
         // Fan out to any per-DID (selective-sync) tracks before the aggregate
