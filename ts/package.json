@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "TypeScript client for the atproto firehose over MoQ transport — the browser + server consumer side of atmoq.",
   "type": "module",
+  "packageManager": "pnpm@10.33.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -47,9 +48,11 @@
   },
   "dependencies": {
     "@atproto/lex-cbor": "^0.1.2",
-    "@fails-components/webtransport": "^1.2.0",
-    "@fails-components/webtransport-transport-http3-quiche": "^1.6.4",
     "@moq/net": "0.1.6"
+  },
+  "optionalDependencies": {
+    "@fails-components/webtransport": "^1.2.0",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.6.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -57,6 +60,6 @@
     "vitest": "^2.1.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

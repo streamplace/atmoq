@@ -135,15 +135,15 @@ name = "atmoq"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "atmoq-moq-native",
+ "atmoq-moq-net",
  "base64",
  "bytes",
  "ciborium",
  "clap",
  "data-encoding",
  "futures-util",
- "moq-native",
  "moq-native-ietf",
- "moq-net",
  "moq-transport",
  "rustls",
  "rustls-pemfile",
@@ -155,6 +155,55 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "atmoq-moq-native"
+version = "0.17.0"
+dependencies = [
+ "atmoq-moq-net",
+ "clap",
+ "futures",
+ "hex",
+ "humantime",
+ "humantime-serde",
+ "notify",
+ "parking_lot",
+ "qmux",
+ "quinn",
+ "rand 0.10.1",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "rustls-native-certs 0.8.4",
+ "rustls-webpki",
+ "serde",
+ "serde_with",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "web-transport-quinn 0.11.9",
+]
+
+[[package]]
+name = "atmoq-moq-net"
+version = "0.1.10"
+dependencies = [
+ "bytes",
+ "futures",
+ "kio",
+ "num_enum",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "web-async",
+ "web-transport-trait",
 ]
 
 [[package]]
@@ -1311,39 +1360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-native"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7355f59dfbdfb9c5615541ec64427c3d905a6c6dceb0d234748a6ec1d6f5ee9d"
-dependencies = [
- "clap",
- "futures",
- "hex",
- "humantime",
- "humantime-serde",
- "moq-net",
- "notify",
- "parking_lot",
- "qmux",
- "quinn",
- "rand 0.10.1",
- "rcgen",
- "reqwest",
- "rustls",
- "rustls-native-certs 0.8.4",
- "rustls-webpki",
- "serde",
- "serde_with",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "web-transport-quinn 0.11.9",
-]
-
-[[package]]
 name = "moq-native-ietf"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1365,24 +1381,6 @@ dependencies = [
  "web-transport",
  "web-transport-quinn 0.3.4",
  "webpki",
-]
-
-[[package]]
-name = "moq-net"
-version = "0.1.10"
-dependencies = [
- "bytes",
- "futures",
- "kio",
- "num_enum",
- "rand 0.10.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "web-async",
- "web-transport-trait",
 ]
 
 [[package]]

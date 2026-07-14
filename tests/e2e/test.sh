@@ -34,9 +34,22 @@ for _ in $(seq 1 240); do
 done
 docker exec "$NAME" test -f /tmp/ready
 
-echo "starting MoQ tail (live subscriber)..."
+echo "starting MoQ tail (live subscriber, Rust client)..."
 docker exec -d "$NAME" bash -c \
   'atmoq firehose --moq-host http://localhost:4443 --raw --idle-ms 8000 >/tmp/moq.jsonl 2>/tmp/moq-tail.log'
+
+echo "starting MoQ tail (Go client)..."
+docker exec -d "$NAME" bash -c \
+  'atmoq-firehose-go --insecure --raw --idle-ms 8000 moqt://localhost:4443 >/tmp/moq-go.jsonl 2>/tmp/moq-go-tail.log'
+
+echo "starting MoQ tail (TS client)..."
+# Cert pinning (serverCertificateHashes) instead of --insecure: the polyfill's
+# rejectUnauthorized path is experimental and fails the WT handshake; moq-relay
+# serves its current cert hash over plain HTTP for exactly this.
+docker exec -d "$NAME" bash -c \
+  'node /app/ts/cmd/atmoq-firehose.mjs moqt://localhost:4443 \
+     --cert-hash "$(curl -s http://localhost:4443/certificate.sha256)" \
+     --raw --idle-ms 8000 >/tmp/moq-ts.jsonl 2>/tmp/moq-ts-tail.log'
 
 echo "driving writes..."
 docker exec "$NAME" node /app/harness/driver.mjs >/tmp/atmoq-driver.json
@@ -56,6 +69,16 @@ docker cp /tmp/atmoq-capture.jsonl "$NAME":/tmp/capture.jsonl >/dev/null
 docker exec "$NAME" node /app/harness/verify.mjs /tmp/driver.json /tmp/capture.jsonl
 
 echo "verifying MoQ passthrough is byte-identical to the PDS firehose..."
-# the detached moq-tail exits after 8s idle; make sure it's flushed
+# the detached moq-tails exit after 8s idle; make sure they're flushed
 sleep 7
 docker exec "$NAME" node /app/harness/diff-frames.mjs /tmp/pds.jsonl /tmp/moq.jsonl --min-overlap=8
+
+echo "verifying the Go client sees the same bytes..."
+docker exec "$NAME" bash -c 'cat /tmp/moq-go-tail.log >&2 || true; test -s /tmp/moq-go.jsonl' \
+  || { echo "FAIL: Go tail produced no frames" >&2; exit 1; }
+docker exec "$NAME" node /app/harness/diff-frames.mjs /tmp/pds.jsonl /tmp/moq-go.jsonl --min-overlap=8
+
+echo "verifying the TS client sees the same bytes..."
+docker exec "$NAME" bash -c 'cat /tmp/moq-ts-tail.log >&2 || true; test -s /tmp/moq-ts.jsonl' \
+  || { echo "FAIL: TS tail produced no frames" >&2; exit 1; }
+docker exec "$NAME" node /app/harness/diff-frames.mjs /tmp/pds.jsonl /tmp/moq-ts.jsonl --min-overlap=8

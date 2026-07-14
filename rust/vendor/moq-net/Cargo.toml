@@ -12,16 +12,20 @@
 [package]
 edition = "2024"
 rust-version = "1.85"
-name = "moq-net"
+# Published under a fork name so `cargo install atmoq` works from crates.io
+# while the two additive patches (see UPSTREAM.md) await upstream consensus.
+# The lib name stays `moq_net`, so consumers use dependency renaming:
+#   moq-net = { package = "atmoq-moq-net", version = "..." }
+name = "atmoq-moq-net"
 version = "0.1.10"
-authors = ["Luke Curley"]
+authors = ["Luke Curley", "Eli Mallon <eli@aquareum.tv>"]
 build = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "The networking layer for Media over QUIC: real-time pub/sub with built-in caching, fan-out, and prioritization."
+description = "TEMPORARY fork of moq-net 0.1.10 with two additive replay-window patches, pending upstreaming to moq-dev/moq. Use moq-net unless you are atmoq."
 readme = "README.md"
 keywords = [
     "quic",
@@ -36,7 +40,7 @@ categories = [
     "web-programming",
 ]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/moq-dev/moq"
+repository = "https://github.com/streamplace/atmoq"
 resolver = "2"
 
 [features]

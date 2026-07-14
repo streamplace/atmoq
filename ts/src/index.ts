@@ -19,12 +19,13 @@
 
 export { connect, Session, Subscription } from "./transport.js";
 export type { ConnectOptions } from "./transport.js";
-export { decodeFrame } from "./frame.js";
+export { decodeFrame, InvalidFrameError } from "./frame.js";
 export type {
   AtSyncMessage,
   FrameHeader,
   MessageType,
 } from "./frame.js";
+export { validateDrisl, assertDrisl, InvalidDrislError } from "./drisl.js";
 export { parseCarBlocks } from "./car.js";
 export type { CarBlocks } from "./car.js";
 export { DefaultBroadcast, DefaultTrack } from "./constants.js";

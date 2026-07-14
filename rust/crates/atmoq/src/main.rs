@@ -19,15 +19,21 @@ use tokio::sync::mpsc;
 /// Adapts the disk-backed [`GroupStore`] to moq-net's [`moq_net::GroupSource`]
 /// so the lite publisher can serve a deep (disk-served) replay window for
 /// subscribers resuming from a group that's already aged out of the RAM cache.
-/// Shares the same store the pump writes to (`Arc<Mutex<..>>`); reads only take
-/// the lock for the brief synchronous seek+read, never across an await.
+/// Shares the same store the pump writes to (`Arc<Mutex<..>>`); the lock is
+/// held only for the in-memory index lookup — the actual disk read happens
+/// after release, so concurrent deep resumes never serialize the ingest
+/// pump's appends behind their file I/O.
 struct StoreSource(Arc<Mutex<GroupStore>>);
 
 impl moq_net::GroupSource for StoreSource {
     fn group(&self, sequence: u64) -> Option<Vec<Bytes>> {
-        match self.0.lock().unwrap().read(sequence) {
-            Ok(frames) => frames,
+        let loc = self.0.lock().unwrap().locate(sequence)?;
+        match atmoq::store::read_group_at(&loc, sequence) {
+            Ok(frames) => Some(frames),
             Err(err) => {
+                // Racing GC (segment deleted between locate and read) lands
+                // here too; the group is simply gone — a gap the consumer
+                // repairs via PDS re-sync.
                 tracing::warn!(?err, sequence, "group source read failed");
                 None
             }
@@ -163,6 +169,14 @@ struct RelayArgs {
     /// resume without holding it all in RAM.
     #[arg(long, default_value_t = 259200)]
     backfill_window_secs: u64,
+    /// Cap on concurrently-served per-DID (selective-sync) tracks
+    #[arg(long, default_value_t = 10_000)]
+    max_did_tracks: usize,
+    /// Cap on total group-store disk usage in bytes (0 = age-based GC only).
+    /// When exceeded, the oldest segments are dropped first, shrinking the
+    /// deep-replay window rather than filling the disk.
+    #[arg(long, default_value_t = 0)]
+    max_store_bytes: u64,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -225,6 +239,14 @@ struct ServeArgs {
     /// resume without holding it all in RAM.
     #[arg(long, default_value_t = 259200)]
     backfill_window_secs: u64,
+    /// Cap on concurrently-served per-DID (selective-sync) tracks
+    #[arg(long, default_value_t = 10_000)]
+    max_did_tracks: usize,
+    /// Cap on total group-store disk usage in bytes (0 = age-based GC only).
+    /// When exceeded, the oldest segments are dropped first, shrinking the
+    /// deep-replay window rather than filling the disk.
+    #[arg(long, default_value_t = 0)]
+    max_store_bytes: u64,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -515,6 +537,8 @@ fn print_ops(payload: &ciborium::Value, quiet: bool) -> anyhow::Result<usize> {
         let record = cid_bytes
             .as_ref()
             .and_then(|c| blocks.get(c))
+            // Records are DRISL too; reject invalid ones (rendered as null).
+            .filter(|data| atmoq::drisl::validate_exact(data).is_ok())
             .and_then(|data| ciborium::de::from_reader::<ciborium::Value, _>(data.as_slice()).ok())
             .map(|v| cbor_to_json(&v));
         if !quiet {
@@ -561,11 +585,21 @@ fn load_group_seq(path: &Option<std::path::PathBuf>) -> Option<u64> {
     Some(seq)
 }
 
-/// Persist the high-water group sequence (best-effort, no fsync — mirrors the
-/// cursor file). Called on each group creation.
+/// Write a small state file atomically: write to a sibling tmp file, then
+/// rename over the target. A crash mid-write can no longer leave a truncated
+/// or empty file behind (plain fs::write truncates before writing). Best
+/// effort, no fsync — losing the very last update costs at most one group /
+/// a few seconds of cursor.
+fn write_state_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Persist the high-water group sequence. Called on each group creation.
 fn persist_group_seq(path: &Option<std::path::PathBuf>, seq: u64) {
     let Some(path) = path else { return };
-    if let Err(err) = std::fs::write(path, format!("{seq}\n")) {
+    if let Err(err) = write_state_file(path, &format!("{seq}\n")) {
         tracing::warn!(?err, path = %path.display(), "failed to persist group sequence");
     }
 }
@@ -637,8 +671,20 @@ fn build_lite_publisher(
     window_secs: u64,
 ) -> anyhow::Result<FramePublisher> {
     // The disk store is always on for Lite serve/relay (mirrors indigo's
-    // always-persisting relay); the directory has a default.
+    // always-persisting relay); the directory has a default. Log the resolved
+    // path: the default is *relative* (data/atmoq/store), and a container
+    // without a volume mount silently loses it on every deploy.
     let store = Some(Arc::new(Mutex::new(GroupStore::open(group_store_dir)?)));
+    let resolved =
+        std::fs::canonicalize(group_store_dir).unwrap_or_else(|_| group_store_dir.to_path_buf());
+    tracing::info!(dir = %resolved.display(), "group store open");
+    // The seq sidecar records the *in-progress* group's sequence (persisted at
+    // creation), which the store alone can't know: groups reach the store only
+    // on rotation, so store.max_seq() is the last *completed* group. Without
+    // the sidecar, a restart would re-issue the in-progress group's sequence
+    // for different content. Default it into the store dir so the guarantee
+    // holds without configuration.
+    let group_seq_file = group_seq_file.or_else(|| Some(group_store_dir.join("group_seq")));
     if let Some(s) = &store {
         // Reload only the *RAM* window into the live cache (Tier A); the deeper
         // disk history is served on demand via the group source below.
@@ -647,10 +693,29 @@ fn build_lite_publisher(
         // straight from disk for resuming subscribers.
         track.set_group_source(Arc::new(StoreSource(s.clone())))?;
     }
-    let seed = store
-        .as_ref()
-        .and_then(|s| s.lock().unwrap().max_seq())
-        .or_else(|| load_group_seq(&group_seq_file));
+    let store_max = store.as_ref().and_then(|s| s.lock().unwrap().max_seq());
+    // Seed = previous high-water sequence; the first group is seed + 1.
+    // With a sidecar value f (the last in-progress group) and a store high
+    // water m (the last completed group), the true high water is max(f, m).
+    // A non-empty store without a sidecar (legacy layout) means the last run's
+    // in-progress sequence is unknown — assume the worst case (m + 1 was in
+    // flight) and skip one id; gaps are harmless, reuse is not.
+    let seed = match load_group_seq(&group_seq_file) {
+        Some(f) => Some(store_max.map_or(f, |m| f.max(m))),
+        None => store_max.map(|m| m + 1),
+    };
+    if seed.is_none() {
+        // Not fatal (first boot looks exactly like this), but loud: if this
+        // relay has run before, the store dir was lost — likely a container
+        // deploy without a volume — and consumers resuming from a high group
+        // cursor will silently receive nothing until the live sequence
+        // catches back up past their cursor.
+        tracing::warn!(
+            dir = %resolved.display(),
+            "group store is empty — group sequence starts at 0 \
+             (if this relay ran before, the store dir was not persisted)"
+        );
+    }
     let group = make_first_group(&mut track, seed, &group_seq_file)?;
     Ok(FramePublisher::Lite {
         track,
@@ -706,12 +771,23 @@ impl FramePublisher {
                     *count = 0;
                     // Persist the completed group to disk before recording the
                     // new sequence, so the store never advertises a group it
-                    // hasn't durably stored.
+                    // hasn't durably stored. A store failure (full disk, bad
+                    // volume) degrades replay but must not kill the relay —
+                    // live fan-out still works; the missed groups are a gap
+                    // consumers repair via PDS re-sync.
                     if let Some(store) = store {
-                        store
-                            .lock()
-                            .unwrap()
-                            .append(finished_seq, now_ms(), group_frames)?;
+                        if let Err(err) =
+                            store
+                                .lock()
+                                .unwrap()
+                                .append(finished_seq, now_ms(), group_frames)
+                        {
+                            tracing::error!(
+                                ?err,
+                                sequence = finished_seq,
+                                "failed to persist group; replay window degraded"
+                            );
+                        }
                         group_frames.clear();
                     }
                     // Persist on creation (not finish): a consumer only resumes
@@ -727,17 +803,23 @@ impl FramePublisher {
         }
     }
 
-    /// Drop stored groups older than the replay window (best-effort).
-    fn gc(&mut self, window_secs: u64) {
+    /// Drop stored groups older than the replay window and/or beyond the size
+    /// budget (best-effort). `window_secs == 0` disables age GC; `max_bytes ==
+    /// 0` disables the size bound.
+    fn gc(&mut self, window_secs: u64, max_bytes: u64) {
         if let FramePublisher::Lite {
             store: Some(store), ..
         } = self
         {
-            if window_secs == 0 {
+            if window_secs == 0 && max_bytes == 0 {
                 return;
             }
-            let cutoff = now_ms().saturating_sub(window_secs * 1000);
-            if let Err(err) = store.lock().unwrap().gc(cutoff) {
+            let cutoff = if window_secs > 0 {
+                now_ms().saturating_sub(window_secs * 1000)
+            } else {
+                0 // nothing expires by age
+            };
+            if let Err(err) = store.lock().unwrap().gc(cutoff, max_bytes) {
                 tracing::warn!(?err, "group store gc failed");
             }
         }
@@ -748,8 +830,29 @@ impl FramePublisher {
             FramePublisher::Lite {
                 mut track,
                 mut group,
+                store,
+                group_frames,
                 ..
             } => {
+                // Flush the in-progress group to disk so a clean shutdown
+                // leaves no replay gap: its frames were already streamed live,
+                // and reload_window re-creates the group (same sequence, same
+                // content) on the next start. An unclean shutdown still loses
+                // these frames (they're only stored on rotation), but the
+                // sidecar seq file guarantees the sequence is never reused.
+                // Best-effort: a store failure here must not block shutdown.
+                if let Some(store) = &store {
+                    if !group_frames.is_empty() {
+                        if let Err(err) =
+                            store
+                                .lock()
+                                .unwrap()
+                                .append(group.sequence, now_ms(), &group_frames)
+                        {
+                            tracing::error!(?err, "failed to flush final group to store");
+                        }
+                    }
+                }
                 group.finish()?;
                 track.finish()?;
                 Ok(())
@@ -784,6 +887,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 broadcast.dynamic(),
                 args.group_size,
                 args.replay_window_secs,
+                args.max_did_tracks,
             );
             // auto-reconnecting session: publishing resumes after drops
             let session = client
@@ -816,13 +920,16 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
-    // Disk retention / deep-replay depth: defaults to the RAM window (Tier A).
-    let backfill_secs = args.backfill_window_secs;
+    // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
+    let retention = Retention {
+        window_secs: args.backfill_window_secs,
+        max_bytes: args.max_store_bytes,
+    };
     pump(
         rx,
         publisher,
         args.group_size,
-        backfill_secs,
+        retention,
         args.cursor_file,
         last_seq,
         did_router,
@@ -855,6 +962,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         broadcast.dynamic(),
         args.group_size,
         args.replay_window_secs,
+        args.max_did_tracks,
     );
 
     // human-facing web frontend: :80 redirect + TLS landing page
@@ -903,13 +1011,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
     let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
-    // Disk retention / deep-replay depth: defaults to the RAM window (Tier A).
-    let backfill_secs = args.backfill_window_secs;
+    // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
+    let retention = Retention {
+        window_secs: args.backfill_window_secs,
+        max_bytes: args.max_store_bytes,
+    };
     let result = pump(
         rx,
         publisher,
         args.group_size,
-        backfill_secs,
+        retention,
         args.cursor_file,
         last_seq,
         Some(did_router),
@@ -921,18 +1032,29 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
 type SharedSeq = std::sync::Arc<std::sync::atomic::AtomicI64>;
 
-/// Cursor file takes precedence over the flag.
+/// Cursor file takes precedence over the flag. An unreadable, empty, or
+/// corrupt cursor file falls back to the flag with a loud warning — bricking
+/// startup over a state file would turn one bad write into a crash loop.
 fn load_initial_cursor(
     cursor_file: &Option<std::path::PathBuf>,
     cursor: Option<i64>,
 ) -> anyhow::Result<SharedSeq> {
     let initial = match cursor_file {
         Some(path) => match std::fs::read_to_string(path) {
-            Ok(s) => {
-                let c = s.trim().parse::<i64>()?;
-                tracing::info!(cursor = c, path = %path.display(), "resuming from cursor file");
-                Some(c)
-            }
+            Ok(s) => match s.trim().parse::<i64>() {
+                Ok(c) => {
+                    tracing::info!(cursor = c, path = %path.display(), "resuming from cursor file");
+                    Some(c)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        path = %path.display(),
+                        "cursor file is corrupt; falling back to --cursor"
+                    );
+                    cursor
+                }
+            },
             Err(_) => cursor,
         },
         None => cursor,
@@ -973,16 +1095,30 @@ fn spawn_ingest(upstream: String, last_seq: SharedSeq) -> mpsc::Receiver<Frame> 
 
 /// Main pump: upstream frames → MoQ publisher, with seq dedupe, periodic
 /// cursor persistence, and a clean group finish on ctrl-c.
+/// Retention knobs for the disk store, applied by the pump's GC tick.
+#[derive(Clone, Copy)]
+struct Retention {
+    /// Age window in seconds (0 = no age-based GC).
+    window_secs: u64,
+    /// Total size budget in bytes (0 = unbounded).
+    max_bytes: u64,
+}
+
 async fn pump(
     mut rx: mpsc::Receiver<Frame>,
     mut publisher: FramePublisher,
     group_size: usize,
-    window_secs: u64,
+    retention: Retention,
     cursor_file: Option<std::path::PathBuf>,
     last_seq: SharedSeq,
     did_router: Option<DidRouter>,
 ) -> anyhow::Result<()> {
     let mut total = 0u64;
+    // Consecutive frames dropped as at-or-below the cursor. A handful after a
+    // reconnect is normal replay overlap; a persistent stream of them means
+    // the upstream's sequence space regressed (relay migration/reset) and we
+    // would otherwise silently relay nothing while looking healthy.
+    let mut dropped_below_cursor = 0u64;
     let mut cursor_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     cursor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // GC the disk store on a slower cadence than cursor flushes.
@@ -996,7 +1132,7 @@ async fn pump(
                 continue;
             }
             _ = gc_tick.tick() => {
-                publisher.gc(window_secs);
+                publisher.gc(retention.window_secs, retention.max_bytes);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -1005,10 +1141,42 @@ async fn pump(
             }
         };
         let Some(frame) = frame else { break };
+        if frame.op == -1 {
+            // Upstream error frames are hop-by-hop: they describe *our*
+            // subscription (e.g. FutureCursor for an invalid cursor), not
+            // anything downstream consumers can act on. They also carry no
+            // seq, so republishing would bypass dedup and repeat the frame on
+            // every reconnect. Surface loudly and drop.
+            let detail = Frame::decode(&frame.raw).ok().and_then(|(_, payload)| {
+                atmoq::frame::field(&payload, "error")
+                    .and_then(|v| v.as_text())
+                    .map(str::to_owned)
+            });
+            tracing::error!(
+                error = ?detail,
+                "upstream sent an error frame; not republishing \
+                 (FutureCursor means the persisted cursor is invalid for this \
+                 upstream — fix or remove --cursor/--cursor-file)"
+            );
+            continue;
+        }
         if let Some(seq) = frame.seq {
             if seq <= last_seq.load(Ordering::Relaxed) {
+                dropped_below_cursor += 1;
+                if dropped_below_cursor.is_multiple_of(1000) {
+                    tracing::error!(
+                        dropped = dropped_below_cursor,
+                        cursor = last_seq.load(Ordering::Relaxed),
+                        seq,
+                        "dropping a persistent stream of frames at or below \
+                         the cursor — the upstream sequence space likely \
+                         regressed (relay migration?); restart with a fresh \
+                         --cursor / cursor file to resume relaying"
+                    );
+                }
                 continue; // reconnect replay duplicate
             }
+            dropped_below_cursor = 0;
             last_seq.store(seq, Ordering::Relaxed);
         }
         // Fan out to any per-DID (selective-sync) tracks before the aggregate
@@ -1035,7 +1203,7 @@ fn persist_cursor(path: &Option<std::path::PathBuf>, last_seq: &std::sync::atomi
     if seq < 0 {
         return;
     }
-    if let Err(err) = std::fs::write(path, format!("{seq}\n")) {
+    if let Err(err) = write_state_file(path, &format!("{seq}\n")) {
         tracing::warn!(?err, path = %path.display(), "failed to persist cursor");
     }
 }
@@ -1062,6 +1230,90 @@ mod tests {
         // None path is a no-op (never panics, never reads).
         persist_group_seq(&None, 5);
         assert_eq!(load_group_seq(&None), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn test_track() -> moq_net::TrackProducer {
+        let mut broadcast = moq_net::Broadcast::new().produce();
+        broadcast
+            .create_track(moq_net::Track {
+                name: "test".into(),
+                priority: 0,
+            })
+            .unwrap()
+    }
+
+    fn lite_parts(p: &FramePublisher) -> (u64, Option<Arc<Mutex<GroupStore>>>) {
+        match p {
+            FramePublisher::Lite { group, store, .. } => (group.sequence, store.clone()),
+            _ => panic!("expected lite publisher"),
+        }
+    }
+
+    #[test]
+    fn group_sequence_is_never_reused_across_restarts() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "atmoq-restart-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // Run 1: rotate once (group 0 completes, stored), leave group 1
+        // in progress with one frame, shut down cleanly.
+        {
+            let mut p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, _) = lite_parts(&p);
+            assert_eq!(seq, 0);
+            rt.block_on(async {
+                p.write(b"f0".to_vec(), 2).await.unwrap();
+                p.write(b"f1".to_vec(), 2).await.unwrap(); // rotates: group 0 stored
+                p.write(b"f2".to_vec(), 2).await.unwrap(); // group 1, in progress
+            });
+            p.finish().unwrap();
+        }
+
+        // Run 2: the clean shutdown flushed partial group 1 to the store, so
+        // no replay gap; the first live group must be 2, never 1 again.
+        {
+            let mut p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, store) = lite_parts(&p);
+            assert_eq!(seq, 2);
+            let store = store.unwrap();
+            assert_eq!(
+                store.lock().unwrap().read(1).unwrap().unwrap(),
+                vec![Bytes::from("f2")]
+            );
+            // Leave group 2 in progress with a frame and crash (no finish).
+            rt.block_on(async {
+                p.write(b"f3".to_vec(), 2).await.unwrap();
+            });
+            drop(p);
+        }
+
+        // Run 3: unclean shutdown lost group 2's frames (stored only on
+        // rotation), but the sidecar seq file still forbids reusing its
+        // sequence — the first live group must be 3.
+        {
+            let p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, store) = lite_parts(&p);
+            assert_eq!(seq, 3);
+            assert!(store.unwrap().lock().unwrap().read(2).unwrap().is_none());
+        }
+
+        // Legacy layout: a store without a sidecar seq file must skip one id
+        // past the last completed group (the in-progress sequence is unknown).
+        std::fs::remove_file(dir.join("group_seq")).unwrap();
+        {
+            let p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let (seq, _) = lite_parts(&p);
+            // Store high water is 1 (completed groups 0 and 1) → seed 2 → first 3.
+            assert_eq!(seq, 3);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

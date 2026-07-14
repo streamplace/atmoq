@@ -51,12 +51,23 @@ On Windows (and other hosts where a wildcard IPv6 socket can't reach IPv4),
 add `--client-bind 0.0.0.0:0` if you see `sendmsg error ... 10049` /
 `AddrNotAvailable`.
 
-Frames are republished byte-for-byte — verified against the live Bluesky
+Valid frames are republished byte-for-byte — verified against the live Bluesky
 firehose through both kixelated's public CDN (moq-lite) and Cloudflare's
 public relay (draft-07 dialect). Both legs auto-reconnect on the lite path,
 the upstream cursor persists via `--cursor-file`, and consumers survive
 publisher restarts. See [docs/going-live.md](docs/going-live.md) for running
 this as a service.
+
+**DRISL-strict by design**: atmoq validates every frame against
+[DRISL](https://dasl.ing/drisl.html) (the deterministic CBOR profile atproto
+data is supposed to use) and rejects invalid frames at ingest — a deliberate
+semantic difference from the upstream lenient WebSocket relay, as a forcing
+function for ecosystem strictness. All three clients apply the same
+validation (`rust/crates/atmoq/src/drisl.rs`, `go/drisl.go`,
+`ts/src/drisl.ts` — line-for-line siblings with shared test vectors).
+float64 is valid DRISL and allowed; float16/32, NaN/Infinity, non-minimal
+encodings, unsorted or duplicate map keys, indefinite lengths, and tags other
+than 42 are rejected.
 
 ## Go: the consumer client
 

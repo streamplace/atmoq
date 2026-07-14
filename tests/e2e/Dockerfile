@@ -33,9 +33,16 @@ WORKDIR /indigo
 # checker match. Dial policy only — validation behavior is untouched.
 RUN sed -i '/util\/ssrf/d; /Transport:.*PublicOnlyTransport/d' cmd/relay/relay/host_checker.go \
     && go build -o /out/relay ./cmd/relay
+# The atmoq Go client's demo CLI — its capture leg diffs against the Rust and
+# TS clients (three implementations, one byte stream).
+COPY go /atmoq-go
+RUN cd /atmoq-go && go build -o /out/atmoq-firehose-go ./cmd/atmoq-firehose
 
-FROM node:22-bookworm
-COPY --from=gobuild /out/relay /usr/local/bin/relay
+# trixie (glibc >= 2.38): the TS client's prebuilt quiche WebTransport native
+# module needs GLIBC_2.38 — on bookworm it fails to load and the polyfill
+# silently falls back to an HTTP/2 transport MoQ relays can't speak.
+FROM node:22-trixie
+COPY --from=gobuild /out/relay /out/atmoq-firehose-go /usr/local/bin/
 COPY --from=rustbuild /out/* /moq/bin/moq-relay /usr/local/bin/
 
 WORKDIR /app
@@ -43,6 +50,10 @@ COPY tests/e2e/package.json tests/e2e/tsconfig.json ./
 COPY tests/e2e/dev-env ./dev-env
 # `npm install` runs the prepare script (tsc -> dev-env/dist)
 RUN npm install
+# The atmoq TS client + its demo CLI (third capture leg), self-contained so
+# harness deps and client deps stay independent.
+COPY ts /app/ts
+RUN cd /app/ts && npm install && npm run build
 COPY tests/e2e/harness ./harness
 COPY tests/e2e/moq-relay.toml ./moq-relay.toml
 COPY tests/e2e/entrypoint.sh /entrypoint.sh

@@ -13,13 +13,29 @@
 //   --track <name>       track name (default: atproto)
 //   --limit <n>          exit after N frames (0 = run forever)
 //   --ops                print one line per record op in #commit (goat --ops)
-//   --raw                print raw frame bytes as base64 (one per line)
+//   --raw                one JSON line per frame with base64 raw bytes
 //   --json               pretty-print decoded header + payload as JSON
 //   --insecure           allow self-signed certs (Node polyfill only)
+//   --cert-hash <hex>    pin the server cert by SHA-256 hash (dev TLS)
+//   --idle-ms <n>        exit after N ms without a frame (--raw path)
 //   -h, --help           show this help
 
-import { connect, parseCarBlocks } from "@streamplace/atmoq";
-import { decode, encode } from "@atproto/lex-cbor";
+import {
+  connect,
+  parseCarBlocks,
+  InvalidDrislError,
+  InvalidFrameError,
+} from "@streamplace/atmoq";
+import { decode } from "@atproto/lex-cbor";
+
+// stdout is exclusively the frame/op output stream (JSONL, pipeable to jq);
+// everything else goes to stderr. @moq/net logs its protocol chatter via
+// console.debug/console.log, which Node sends to stdout — rebind those so
+// library logging can't corrupt the output stream.
+console.log = console.error.bind(console);
+console.debug = console.error.bind(console);
+console.info = console.error.bind(console);
+const stdout = (line) => process.stdout.write(line + "\n");
 
 const args = process.argv.slice(2);
 
@@ -32,6 +48,8 @@ function parseFlags(args) {
     raw: false,
     json: false,
     insecure: false,
+    certHash: "",
+    idleMs: 0,
     help: false,
     positional: [],
   };
@@ -60,6 +78,12 @@ function parseFlags(args) {
       case "--insecure":
         flags.insecure = true;
         break;
+      case "--cert-hash":
+        flags.certHash = args[++i];
+        break;
+      case "--idle-ms":
+        flags.idleMs = parseInt(args[++i], 10);
+        break;
       case "--help":
       case "-h":
         flags.help = true;
@@ -86,9 +110,11 @@ Flags:
   --track <name>       track name (default: atproto)
   --limit <n>          exit after N frames (0 = run forever)
   --ops                print one line per record op in #commit (goat --ops)
-  --raw                print raw frame bytes as base64
+  --raw                one JSON line per frame with base64 raw bytes
   --json               pretty-print decoded header + payload as JSON
   --insecure           allow self-signed certs (Node polyfill only)
+  --cert-hash <hex>    pin the server cert by SHA-256 hash (dev TLS)
+  --idle-ms <n>        exit after N ms without a frame (--raw path; 0 = never)
   -h, --help           show this help
 
 Examples:
@@ -109,7 +135,17 @@ async function main() {
   const target = flags.positional[0] || "moqt://streamplace.network";
 
   console.error(`connecting to ${target}...`);
-  const sess = await connect(target, { insecure: flags.insecure });
+  const opts = { insecure: flags.insecure };
+  if (flags.certHash) {
+    // Pin the server cert by SHA-256 hash (hex) — the reliable dev-TLS path
+    // on both Node and browsers; moq relays serve theirs at
+    // http://host:port/certificate.sha256.
+    const value = Uint8Array.from(
+      flags.certHash.trim().match(/../g).map((b) => parseInt(b, 16)),
+    );
+    opts.certHashes = [{ algorithm: "sha-256", value }];
+  }
+  const sess = await connect(target, opts);
   console.error(`connected (version: ${sess.version})`);
 
   const sub = sess.subscribe(flags.broadcast, flags.track);
@@ -119,55 +155,98 @@ async function main() {
 
   let count = 0;
 
+  // Optional idle timeout (like the Rust CLI's --idle-ms): resolve undefined
+  // if no frame arrives within the window, ending the capture cleanly.
+  const withIdle = (promise) => {
+    if (!flags.idleMs) return promise;
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(undefined), flags.idleMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
+
   // --raw wants the original undecoded bytes; use readFrame() for that path.
   // Otherwise use the decoded async iterator.
   if (flags.raw) {
     for (;;) {
-      const frame = await sub.readFrame();
+      const frame = await withIdle(sub.readFrame());
       if (!frame) break;
-      console.log(Buffer.from(frame.data).toString("base64"));
+      // JSONL with a base64 `raw` field — the shape the e2e diff harness and
+      // the Rust CLI's --raw output share.
+      stdout(
+        JSON.stringify({
+          group: frame.group,
+          raw: Buffer.from(frame.data).toString("base64"),
+        }),
+      );
       count++;
       if (flags.limit > 0 && count >= flags.limit) break;
     }
   } else {
-    for await (const msg of sub) {
-      if (flags.ops) {
-        // goat-style --ops: one line per record op in #commit, with the
-        // record decoded from the message's CAR blocks.
-        if (msg.header.t === "#commit") {
-          const opsPrinted = printOps(msg.payload);
-          count += opsPrinted;
-        }
-      } else if (flags.json) {
-        console.log(
-          JSON.stringify(
-            {
-              group: msg.group,
-              frame: msg.frame,
-              type: msg.header.t,
-              header: cborToJson(msg.header),
-              seq: peekPayloadSeq(msg.payload),
-              payloadBytes: msg.payload.length,
-            },
-            null,
-            2,
-          ),
-        );
-        count++;
-      } else {
-        // Default: one compact JSON line per frame, like the Go CLI.
-        console.log(
-          JSON.stringify({
-            group: msg.group,
-            type: msg.header.t,
-            seq: peekPayloadSeq(msg.payload),
-            bytes: msg.payload.length,
-          }),
-        );
-        count++;
-      }
+    let rejected = 0;
+    let done = false;
+    while (!done) {
+      try {
+        for await (const msg of sub) {
+          if (flags.ops) {
+            // goat-style --ops: one line per record op in #commit, with the
+            // record decoded from the message's CAR blocks.
+            if (msg.header.t === "#commit") {
+              const opsPrinted = printOps(msg.payload);
+              count += opsPrinted;
+            }
+          } else if (flags.json) {
+            stdout(
+              JSON.stringify(
+                {
+                  group: msg.group,
+                  frame: msg.frame,
+                  type: msg.header.t,
+                  header: cborToJson(msg.header),
+                  seq: peekPayloadSeq(msg.payload),
+                  payloadBytes: msg.payload.length,
+                },
+                null,
+                2,
+              ),
+            );
+            count++;
+          } else {
+            // Default: one compact JSON line per frame, like the Go CLI.
+            stdout(
+              JSON.stringify({
+                group: msg.group,
+                type: msg.header.t,
+                seq: peekPayloadSeq(msg.payload),
+                bytes: msg.payload.length,
+              }),
+            );
+            count++;
+          }
 
-      if (flags.limit > 0 && count >= flags.limit) break;
+          if (flags.limit > 0 && count >= flags.limit) break;
+        }
+        done = true;
+      } catch (err) {
+        // atmoq is DRISL-strict: a frame that isn't valid DRISL is rejected.
+        // The frame is already consumed and the subscription stays open, so we
+        // log the rejection and keep reading from the next frame.
+        if (
+          err instanceof InvalidDrislError ||
+          err instanceof InvalidFrameError
+        ) {
+          rejected++;
+          console.error(`atmoq-firehose: rejected frame: ${err.message}`);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (rejected > 0) {
+      console.error(`atmoq-firehose: rejected ${rejected} invalid frame(s)`);
     }
   }
 
@@ -234,7 +313,7 @@ function printOps(payload) {
       }
     }
 
-    console.log(
+    stdout(
       JSON.stringify({
         action: op.action,
         path: op.path,

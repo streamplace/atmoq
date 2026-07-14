@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/atmoq"]
-# Vendored moq-net (see [patch.crates-io] below) is its own crate, not a member.
-exclude = ["vendor/moq-net"]
+# The vendored fork crates are their own workspaces, not members, so
+# `cargo clippy --workspace` etc. don't lint upstream code. atmoq reaches them
+# via path+version deps (see crates/atmoq/Cargo.toml).
+exclude = ["vendor/moq-net", "vendor/moq-native"]
 
 [workspace.package]
 version = "0.0.2"
@@ -38,9 +40,11 @@ url = "2"
 #      hardcoded 5s MAX_GROUP_AGE (RAM-bound; see --replay-window-secs).
 #   2. TrackProducer::set_group_source — serve groups older than the RAM cache
 #      from a pluggable (disk-backed) source on resume (see --backfill-window-secs).
-# Vendored in-tree at vendor/moq-net (moq-net 0.1.10 from crates.io + the two
-# commits) so release builds are self-contained — no external git fetch. This is
-# why the crate isn't published to crates.io (path deps are rejected; see
-# release-plz.toml). Drop this and pin a released moq-net once both land upstream.
-[patch.crates-io]
-moq-net = { path = "vendor/moq-net" }
+# The patched moq-net lives in-tree at vendor/moq-net and is published to
+# crates.io as `atmoq-moq-net` so `cargo install atmoq` works; vendor/moq-native
+# republishes an UNMODIFIED moq-native 0.17.0 as `atmoq-moq-native` solely so
+# its moq-net dep resolves to the fork (moq-net types cross the moq-native API
+# boundary, so both sides must use the same crate). atmoq consumes both via
+# dependency renaming with path+version deps in crates/atmoq/Cargo.toml — path
+# wins locally, version is what ships in the published manifest. Drop all of
+# this and pin released moq-net/moq-native once both changes land upstream.
