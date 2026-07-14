@@ -141,27 +141,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # pnpm version comes from ts/package.json's packageManager field.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ts/package.json
       - uses: actions/setup-node@v4
         with:
           node-version-file: ts/.nvmrc
-          cache: npm
-          cache-dependency-path: ts/package-lock.json
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
       - working-directory: ts
         run: |
-          npm ci
-          npx tsc --noEmit
+          pnpm install --frozen-lockfile
+          pnpm exec tsc --noEmit
 
   ts-test:
     name: vitest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ts/package.json
       - uses: actions/setup-node@v4
         with:
           node-version-file: ts/.nvmrc
-          cache: npm
-          cache-dependency-path: ts/package-lock.json
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
       - working-directory: ts
         run: |
-          npm ci
-          npx vitest run
+          pnpm install --frozen-lockfile
+          pnpm exec vitest run
