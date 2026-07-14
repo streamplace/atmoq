@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> This is `atmoq-moq-net`, a **temporary fork** of [`moq-net`](https://crates.io/crates/moq-net) 0.1.10
+> ([moq-dev/moq](https://github.com/moq-dev/moq)) carrying two additive replay-window patches that
+> [atmoq](https://github.com/streamplace/atmoq) needs, pending upstream consensus — see
+> [`UPSTREAM.md`](https://github.com/streamplace/atmoq/blob/main/rust/vendor/moq-net/UPSTREAM.md).
+> Unless you are atmoq, you want the real `moq-net`. This crate will be deprecated once the
+> patches (or an equivalent) land upstream.
+
 [![Documentation](https://docs.rs/moq-net/badge.svg)](https://docs.rs/moq-net/)
 [![Crates.io](https://img.shields.io/crates/v/moq-net.svg)](https://crates.io/crates/moq-net)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/moq-dev/moq/blob/main/LICENSE-MIT)

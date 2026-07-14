@@ -17,9 +17,12 @@ ciborium.workspace = true
 clap.workspace = true
 data-encoding = "2"
 futures-util.workspace = true
-moq-native = "0.17"
+# Fork crates (see vendor/*/UPSTREAM.md and the workspace Cargo.toml): package
+# renaming keeps the extern names `moq_native`/`moq_net`, the path builds the
+# in-tree copy locally, and the version is what the published crate resolves.
+moq-native = { package = "atmoq-moq-native", version = "0.17.0", path = "../../vendor/moq-native" }
 moq-native-07.workspace = true
-moq-net = "0.1"
+moq-net = { package = "atmoq-moq-net", version = "0.1.10", path = "../../vendor/moq-net" }
 moq-transport-07.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 rustls-pemfile = "2"
