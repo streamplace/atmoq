@@ -1,23 +1,28 @@
 # release-plz: version bumping, changelog, git tags, and GitHub releases.
 # https://release-plz.dev
 #
-# atmoq vendors a patched moq-net in-tree at vendor/moq-net (see Cargo.toml's
-# [patch.crates-io]) until those changes land in a published moq-net, and
-# crates.io forbids path dependencies — so this crate cannot be published there
-# yet. We therefore disable cargo publishing and let release-plz own everything
-# else: the version, CHANGELOG.md, the git tag, and the GitHub release. The
-# release workflow's build job attaches prebuilt binaries to that release.
-# (Re-enable publish once the moq-net patch is dropped for a released crate.)
+# atmoq's patched moq-net (vendor/moq-net) and its companion moq-native
+# republish (vendor/moq-native) are published to crates.io as atmoq-moq-net /
+# atmoq-moq-native, so atmoq itself is publishable again: its manifest uses
+# path+version deps, and cargo strips the paths at publish time. release-plz
+# owns the version, CHANGELOG.md, the git tag, the GitHub release, and the
+# crates.io publish; the release workflow's build job attaches prebuilt
+# binaries to that release.
+#
+# The vendor crates are workspace-EXCLUDED, so release-plz never touches them.
+# When a vendored patch changes: manually bump that fork's version, `cargo
+# publish` it from its directory, and bump the pinned version in
+# crates/atmoq/Cargo.toml. (This whole arrangement dies when the patches land
+# upstream — see vendor/moq-net/UPSTREAM.md.)
 
 # Monorepo: the Rust client lives in rust/. To keep its release cadence
 # independent of the Go client (go/, which tags go/vX.Y.Z), release-plz cuts
 # `rust-vX.Y.Z` tags. The release workflow points release-plz at rust/Cargo.toml
 # via its manifest_path input; this config sits next to that manifest.
-# (Re-enable publish once the moq-net patch is dropped for a released crate.)
 
 [workspace]
-# Don't run `cargo publish` (crates.io rejects the vendored path dep; see above).
-publish = false
+# Publish atmoq to crates.io on release (deps resolve to the atmoq-moq-* forks).
+publish = true
 # Still cut a git tag and a GitHub release for every version bump.
 git_tag_enable = true
 git_release_enable = true
