@@ -162,22 +162,34 @@ export class Subscription {
     { data: Uint8Array; group: number; frame: number } | undefined
   > {
     for (;;) {
-      if (!this.group) {
+      // Work on a local reference: a concurrent close() clears `this.group`
+      // while we're suspended on an await below, and that must read as a
+      // clean end of the subscription, not a TypeError on undefined.
+      let group = this.group;
+      if (!group) {
+        if (this.closed) return undefined;
         // Sequence-ordered: a group arriving late (seq <= last delivered) is
         // skipped, same as the Rust model's monotonic next_group().
-        this.group = await this.track.nextGroupOrdered();
-        if (!this.group) return undefined;
+        group = await this.track.nextGroupOrdered();
+        if (!group) return undefined;
+        if (this.closed) {
+          // close() ran during the await and never saw this group.
+          group.close();
+          return undefined;
+        }
+        this.group = group;
       }
-      const next = await this.group.readFrameSequence();
+      const next = await group.readFrameSequence();
+      if (this.closed) return undefined;
       if (next) {
         return {
           data: next.data,
-          group: this.group.sequence,
+          group: group.sequence,
           frame: next.sequence,
         };
       }
       // Clean end of group: release it and move to the next.
-      this.group.close();
+      group.close();
       this.group = undefined;
     }
   }

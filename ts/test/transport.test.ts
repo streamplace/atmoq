@@ -100,4 +100,27 @@ describe("Subscription.readFrame", () => {
     track.close();
     expect(await sub.readFrame()).toBeUndefined();
   });
+
+  it("close() during a suspended readFrame() ends cleanly, not with a TypeError", async () => {
+    // Regression test: close() clears the current group while readFrame() is
+    // parked on readFrameSequence(); the resumed read must see a clean end.
+    const track = new Moq.Track("atproto");
+    const sub = new Subscription(track);
+
+    const g0 = track.appendGroup();
+    g0.writeFrame(frame(0));
+    expect(await sub.readFrame()).toMatchObject({ group: 0, frame: 0 });
+
+    // Suspend readFrame() mid-group (g0 is open with no buffered frames),
+    // then close the subscription out from under it.
+    const pending = sub.readFrame();
+    sub.close();
+    expect(await pending).toBeUndefined();
+
+    // And the same race while parked on nextGroupOrdered() instead.
+    const sub2 = new Subscription(new Moq.Track("atproto"));
+    const pending2 = sub2.readFrame();
+    sub2.close();
+    expect(await pending2).toBeUndefined();
+  });
 });

@@ -271,8 +271,10 @@ function validateItem(data: Uint8Array, offset: number, depth: number): number {
       if (initial === 0xff) {
         throw new InvalidDrislError("unexpected break code", offset);
       }
+      // A truncated 0xf8 (missing argument byte) still reports `ai` (24, like
+      // Go) rather than a garbled "simple value undefined".
       throw new InvalidDrislError(
-        `simple value ${ai === 24 ? data[offset + 1] : ai} is not allowed (only false/true/null)`,
+        `simple value ${ai === 24 && offset + 1 < data.length ? data[offset + 1] : ai} is not allowed (only false/true/null)`,
         offset,
       );
     }

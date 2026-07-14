@@ -98,6 +98,8 @@ describe("validateDrisl: rejections", () => {
     ["undefined", bytes(0xf7), /undefined/],
     ["simple value 19", bytes(0xf3), /simple value/],
     ["simple value 32 (via 0xf8)", bytes(0xf8, 0x20), /simple value/],
+    // Truncated 0xf8: message reports ai (24), not "simple value undefined".
+    ["simple value via truncated 0xf8", bytes(0xf8), /simple value 24/],
     // {"b": 1, "a": 2} — out of order
     [
       "unsorted map keys",
