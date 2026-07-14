@@ -1,0 +1,5 @@
+# Match upstream moq-dev/moq (rs/.rustfmt.toml) so this vendored code stays
+# byte-identical to upstream and `cargo fmt --all` (which descends into local
+# path deps) is a no-op here.
+hard_tabs = true
+max_width = 120

@@ -1,0 +1,454 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.17.0](https://github.com/moq-dev/moq/compare/moq-native-v0.16.3...moq-native-v0.17.0) - 2026-06-10
+
+### Added
+
+- *(moq-relay)* reload TLS certs on filesystem change instead of SIGUSR1 ([#1630](https://github.com/moq-dev/moq/pull/1630))
+
+### Fixed
+
+- *(moq-relay)* classify malformed auth-API JSON as an upstream 502
+
+### Other
+
+- Revert accidental commit 24d25604 (moq-native connect/reconnect refactor)
+- *(moq-native)* migrate from anyhow to thiserror ([#1651](https://github.com/moq-dev/moq/pull/1651))
+
+## [0.16.3](https://github.com/moq-dev/moq/compare/moq-native-v0.16.2...moq-native-v0.16.3) - 2026-06-03
+
+### Other
+
+- *(deps)* bump the cargo group (with code fixes for rand/rubato/rcgen) ([#1603](https://github.com/moq-dev/moq/pull/1603))
+
+## [0.16.2](https://github.com/moq-dev/moq/compare/moq-native-v0.16.1...moq-native-v0.16.2) - 2026-06-02
+
+### Other
+
+- enable WebSocket keep-alive on the client path ([#1580](https://github.com/moq-dev/moq/pull/1580))
+
+## [0.16.1](https://github.com/moq-dev/moq/compare/moq-native-v0.16.0...moq-native-v0.16.1) - 2026-05-30
+
+### Other
+
+- route Android logs to logcat ([#1541](https://github.com/moq-dev/moq/pull/1541))
+
+## [0.16.0](https://github.com/moq-dev/moq/compare/moq-native-v0.15.0...moq-native-v0.16.0) - 2026-05-30
+
+### Fixed
+
+- *(changelog)* repair malformed CHANGELOGs blocking release-plz ([#1511](https://github.com/moq-dev/moq/pull/1511))
+
+### Other
+
+- auto-reconnect sessions; conducer-based Reconnect notifications ([#1544](https://github.com/moq-dev/moq/pull/1544))
+- scope mTLS grants to the connection URL path ([#1535](https://github.com/moq-dev/moq/pull/1535))
+- stop downgrading WebSocket clients to moq-lite-02 ([#1523](https://github.com/moq-dev/moq/pull/1523))
+- lint shell, workflows, TOML, Nix, and justfiles via nix devShell ([#1519](https://github.com/moq-dev/moq/pull/1519))
+- advertise QUIC preferred_address in the server config ([#1512](https://github.com/moq-dev/moq/pull/1512))
+- *(jemalloc)* drop runtime activation; fixes moq-boy startup crash ([#1509](https://github.com/moq-dev/moq/pull/1509))
+- release ([#1493](https://github.com/moq-dev/moq/pull/1493))
+
+## [0.15.0](https://github.com/moq-dev/moq/compare/moq-native-v0.14.4...moq-native-v0.15.0) - 2026-05-25
+
+### Other
+
+- convert to a moq-native example ([#1494](https://github.com/moq-dev/moq/pull/1494))
+- release ([#1475](https://github.com/moq-dev/moq/pull/1475))
+- *(rs)* add cargo-deny and resolve outstanding advisories ([#1486](https://github.com/moq-dev/moq/pull/1486))
+
+## [0.14.4](https://github.com/moq-dev/moq/compare/moq-native-v0.14.3...moq-native-v0.14.4) - 2026-05-23
+
+### Other
+
+- Add stats via MoQ broadcasts ([#1442](https://github.com/moq-dev/moq/pull/1442))
+- Make reconnect timeout mandatory with 5-minute default ([#1443](https://github.com/moq-dev/moq/pull/1443))
+
+## [0.14.3](https://github.com/moq-dev/moq/compare/moq-native-v0.14.2...moq-native-v0.14.3) - 2026-05-21
+
+### Other
+
+- Add audio encoder reconfiguration ([#1362](https://github.com/moq-dev/moq/pull/1362))
+
+## [0.14.2](https://github.com/moq-dev/moq/compare/moq-native-v0.14.1...moq-native-v0.14.2) - 2026-05-20
+
+### Other
+
+- rename moq-lite package to moq-net ([#1428](https://github.com/moq-dev/moq/pull/1428))
+
+## [0.14.1](https://github.com/moq-dev/moq/compare/moq-native-v0.14.0...moq-native-v0.14.1) - 2026-05-18
+
+### Fixed
+
+- bump web-transport-iroh to 0.4 to unbreak cargo update ([#1421](https://github.com/moq-dev/moq/pull/1421))
+
+### Other
+
+- Add draft-ietf-moq-transport-18 support ([#1418](https://github.com/moq-dev/moq/pull/1418))
+
+## [0.14.0](https://github.com/moq-dev/moq/compare/moq-native-v0.13.13...moq-native-v0.14.0) - 2026-05-07
+
+### Fixed
+
+- *(config)* accept single string or array for TOML list fields ([#1377](https://github.com/moq-dev/moq/pull/1377))
+
+### Other
+
+- Fix DNS resolution to prefer matching address family ([#1379](https://github.com/moq-dev/moq/pull/1379))
+- Revert moq-lite FETCH/Subscription API changes ([#1372](https://github.com/moq-dev/moq/pull/1372))
+- relocate jemalloc helper; wire it into moq-boy ([#1360](https://github.com/moq-dev/moq/pull/1360))
+- backport Subscription model API for FETCH readiness ([#1348](https://github.com/moq-dev/moq/pull/1348))
+- hop-based clustering ([#1322](https://github.com/moq-dev/moq/pull/1322))
+
+## [0.13.13](https://github.com/moq-dev/moq/compare/moq-native-v0.13.12...moq-native-v0.13.13) - 2026-04-19
+
+### Other
+
+- resolve DNS hostnames in --server-bind ([#1332](https://github.com/moq-dev/moq/pull/1332))
+- Add README files for Rust crates ([#1284](https://github.com/moq-dev/moq/pull/1284))
+- Clarify group delivery semantics with recv_group and next_group_ordered ([#1324](https://github.com/moq-dev/moq/pull/1324))
+
+## [0.13.11](https://github.com/moq-dev/moq/compare/moq-native-v0.13.10...moq-native-v0.13.11) - 2026-04-15
+
+### Other
+
+- Add mTLS support for moq-relay ([#1299](https://github.com/moq-dev/moq/pull/1299))
+
+## [0.13.10](https://github.com/moq-dev/moq/compare/moq-native-v0.13.9...moq-native-v0.13.10) - 2026-04-09
+
+### Other
+
+- Add automatic reconnection with exponential backoff ([#1246](https://github.com/moq-dev/moq/pull/1246))
+
+## [0.13.9](https://github.com/moq-dev/moq/compare/moq-native-v0.13.8...moq-native-v0.13.9) - 2026-04-07
+
+### Added
+
+- *(moq-native)* support websocket-only client ([#1235](https://github.com/moq-dev/moq/pull/1235))
+
+## [0.13.8](https://github.com/moq-dev/moq/compare/moq-native-v0.13.7...moq-native-v0.13.8) - 2026-04-07
+
+### Other
+
+- Increase QUIC idle timeout to 30s and keep-alive to 5s ([#1221](https://github.com/moq-dev/moq/pull/1221))
+
+## [0.13.7](https://github.com/moq-dev/moq/compare/moq-native-v0.13.6...moq-native-v0.13.7) - 2026-04-03
+
+### Other
+
+- Add moq-relay release workflow and Nix cache configuration ([#1178](https://github.com/moq-dev/moq/pull/1178))
+- Update dependencies including breaking changes ([#1175](https://github.com/moq-dev/moq/pull/1175))
+
+## [0.13.6](https://github.com/moq-dev/moq/compare/moq-native-v0.13.5...moq-native-v0.13.6) - 2026-03-18
+
+### Other
+
+- Improve the connect logging. ([#1131](https://github.com/moq-dev/moq/pull/1131))
+- Remove unused dev-dependencies and bump @moq/qmux ([#1126](https://github.com/moq-dev/moq/pull/1126))
+- Bump @moq/qmux to 0.0.4
+
+## [0.13.5](https://github.com/moq-dev/moq/compare/moq-native-v0.13.4...moq-native-v0.13.5) - 2026-03-16
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.13.4](https://github.com/moq-dev/moq/compare/moq-native-v0.13.3...moq-native-v0.13.4) - 2026-03-13
+
+### Other
+
+- Switch to qmux with ALPN negotiation and TLS 1.2 ([#1096](https://github.com/moq-dev/moq/pull/1096))
+- Fix iroh test and add noq backend tests ([#1093](https://github.com/moq-dev/moq/pull/1093))
+- Fix clippy large_enum_variant warning for RequestKind ([#1092](https://github.com/moq-dev/moq/pull/1092))
+
+## [0.13.2](https://github.com/moq-dev/moq/compare/moq-native-v0.13.1...moq-native-v0.13.2) - 2026-03-03
+
+### Fixed
+
+- prevent panic in Server::close() on ctrl+c ([#982](https://github.com/moq-dev/moq/pull/982))
+
+### Other
+
+- release ([#1039](https://github.com/moq-dev/moq/pull/1039))
+- Add broadcast integration tests and fix producer cache handling ([#1011](https://github.com/moq-dev/moq/pull/1011))
+- Replace --alpn with --client-version / --server-version ([#1009](https://github.com/moq-dev/moq/pull/1009))
+- Replace tokio::sync::watch with custom Producer/Subscriber ([#996](https://github.com/moq-dev/moq/pull/996))
+
+## [0.13.0](https://github.com/moq-dev/moq/compare/moq-native-v0.12.2...moq-native-v0.13.0) - 2026-02-12
+
+### Other
+
+- Reduce the moq-lite API size ([#943](https://github.com/moq-dev/moq/pull/943))
+- (AI) Initial moq-transport-15 support ([#930](https://github.com/moq-dev/moq/pull/930))
+- (AI) Add support for quiche to moq-native ([#928](https://github.com/moq-dev/moq/pull/928))
+
+## [0.12.2](https://github.com/moq-dev/moq/compare/moq-native-v0.12.1...moq-native-v0.12.2) - 2026-02-09
+
+### Other
+
+- Revert ipv4 and fix tls.disable-verify in TOML ([#918](https://github.com/moq-dev/moq/pull/918))
+
+## [0.12.1](https://github.com/moq-dev/moq/compare/moq-native-v0.12.0...moq-native-v0.12.1) - 2026-02-03
+
+### Other
+
+- Tweak a few small things the AI merge missed. ([#876](https://github.com/moq-dev/moq/pull/876))
+- Remove Produce struct and simplify API ([#875](https://github.com/moq-dev/moq/pull/875))
+
+## [0.12.0](https://github.com/moq-dev/moq/compare/moq-native-v0.11.0...moq-native-v0.12.0) - 2026-01-24
+
+### Other
+
+- Add a builder pattern for constructing clients/servers ([#862](https://github.com/moq-dev/moq/pull/862))
+- Add #[non_exhaustive] to moq-native configuration. ([#850](https://github.com/moq-dev/moq/pull/850))
+- moq-native: Implement QUIC-LB compatible CID generation ([#848](https://github.com/moq-dev/moq/pull/848))
+- Fix bugs with WebSocket fallback ([#844](https://github.com/moq-dev/moq/pull/844))
+- upgrade to Rust edition 2024 ([#838](https://github.com/moq-dev/moq/pull/838))
+
+## [0.11.0](https://github.com/moq-dev/moq/compare/moq-native-v0.10.1...moq-native-v0.11.0) - 2026-01-10
+
+### Added
+
+- iroh support ([#794](https://github.com/moq-dev/moq/pull/794))
+
+### Other
+
+- support WebSocket fallback for clients ([#812](https://github.com/moq-dev/moq/pull/812))
+- Add debug features to moq-native ([#806](https://github.com/moq-dev/moq/pull/806))
+- Certificate reloading ([#774](https://github.com/moq-dev/moq/pull/774))
+
+## [0.10.1](https://github.com/moq-dev/moq/compare/moq-native-v0.10.0...moq-native-v0.10.1) - 2025-12-13
+
+### Other
+
+- kixelated -> moq-dev ([#749](https://github.com/moq-dev/moq/pull/749))
+- Fix some deployment stuff. ([#747](https://github.com/moq-dev/moq/pull/747))
+
+## [0.10.0](https://github.com/moq-dev/moq/compare/moq-native-v0.9.6...moq-native-v0.10.0) - 2025-11-26
+
+### Other
+
+- Upgrade web-transport ([#680](https://github.com/moq-dev/moq/pull/680))
+- Add moqt:// support. ([#659](https://github.com/moq-dev/moq/pull/659))
+- Allow --tls-disable-verify without false. ([#648](https://github.com/moq-dev/moq/pull/648))
+
+## [0.9.0](https://github.com/moq-dev/moq/compare/moq-native-v0.8.4...moq-native-v0.9.0) - 2025-10-25
+
+### Other
+
+- Fix an arg collision with --tls-root and --cluster-root ([#637](https://github.com/moq-dev/moq/pull/637))
+
+## [0.8.4](https://github.com/moq-dev/moq/compare/moq-native-v0.8.3...moq-native-v0.8.4) - 2025-10-18
+
+### Other
+
+- Fix a potential race with append_group ([#600](https://github.com/moq-dev/moq/pull/600))
+
+## [0.8.3](https://github.com/moq-dev/moq/compare/moq-native-v0.8.2...moq-native-v0.8.3) - 2025-09-05
+
+### Added
+
+- *(moq-native)* support raw QUIC sessions with `moql://` URLs ([#578](https://github.com/moq-dev/moq/pull/578))
+
+## [0.8.2](https://github.com/moq-dev/moq/compare/moq-native-v0.8.1...moq-native-v0.8.2) - 2025-09-04
+
+### Other
+
+- Support aws_lc_rs or ring in moq-native ([#574](https://github.com/moq-dev/moq/pull/574))
+
+## [0.8.0](https://github.com/moq-dev/moq/compare/moq-native-v0.7.7...moq-native-v0.8.0) - 2025-09-04
+
+### Other
+
+- Add WebSocket fallback support ([#570](https://github.com/moq-dev/moq/pull/570))
+
+## [0.7.7](https://github.com/moq-dev/moq/compare/moq-native-v0.7.6...moq-native-v0.7.7) - 2025-08-12
+
+### Other
+
+- Less verbose errors, using % instead of ? ([#521](https://github.com/moq-dev/moq/pull/521))
+
+## [0.7.6](https://github.com/moq-dev/moq/compare/moq-native-v0.7.5...moq-native-v0.7.6) - 2025-07-31
+
+### Other
+
+- updated the following local packages: moq-lite
+
+## [0.7.5](https://github.com/moq-dev/moq/compare/moq-native-v0.7.4...moq-native-v0.7.5) - 2025-07-22
+
+### Other
+
+- Use Nix to build Docker images, supporting environment variables instead of TOML ([#486](https://github.com/moq-dev/moq/pull/486))
+- Reject WebTransport connections early ([#479](https://github.com/moq-dev/moq/pull/479))
+
+## [0.7.4](https://github.com/moq-dev/moq/compare/moq-native-v0.7.3...moq-native-v0.7.4) - 2025-07-19
+
+### Other
+
+- updated the following local packages: moq-lite
+
+## [0.7.3](https://github.com/moq-dev/moq/compare/moq-native-v0.7.2...moq-native-v0.7.3) - 2025-07-16
+
+### Other
+
+- Remove hang-wasm and fix some minor things. ([#465](https://github.com/moq-dev/moq/pull/465))
+
+## [0.7.2](https://github.com/moq-dev/moq/compare/moq-native-v0.7.1...moq-native-v0.7.2) - 2025-06-29
+
+### Other
+
+- Revamp auth one last time... for now. ([#453](https://github.com/moq-dev/moq/pull/453))
+
+## [0.7.1](https://github.com/moq-dev/moq/compare/moq-native-v0.7.0...moq-native-v0.7.1) - 2025-06-16
+
+### Fixed
+
+- args for tls generate need to be without the port number ([#413](https://github.com/moq-dev/moq/pull/413))
+
+### Other
+
+- Default to the first certificate when SNI matching fails. ([#414](https://github.com/moq-dev/moq/pull/414))
+
+## [0.7.0](https://github.com/moq-dev/moq/compare/moq-native-v0.6.9...moq-native-v0.7.0) - 2025-06-03
+
+### Other
+
+- Add support for authentication tokens ([#399](https://github.com/moq-dev/moq/pull/399))
+
+## [0.6.9](https://github.com/moq-dev/moq/compare/moq-native-v0.6.8...moq-native-v0.6.9) - 2025-05-21
+
+### Other
+
+- Split into Rust/Javascript halves and rebrand as moq-lite/hang ([#376](https://github.com/moq-dev/moq/pull/376))
+
+## [0.6.8](https://github.com/moq-dev/moq/compare/moq-native-v0.6.7...moq-native-v0.6.8) - 2025-03-09
+
+### Other
+
+- Less aggressive idle timeout. ([#351](https://github.com/moq-dev/moq/pull/351))
+
+## [0.6.7](https://github.com/moq-dev/moq/compare/moq-native-v0.6.6...moq-native-v0.6.7) - 2025-03-01
+
+### Other
+
+- updated the following local packages: moq-transfork
+
+## [0.6.6](https://github.com/moq-dev/moq/compare/moq-native-v0.6.5...moq-native-v0.6.6) - 2025-02-13
+
+### Other
+
+- Have moq-native return web_transport_quinn. ([#331](https://github.com/moq-dev/moq/pull/331))
+
+## [0.6.5](https://github.com/moq-dev/moq/compare/moq-native-v0.6.4...moq-native-v0.6.5) - 2025-01-30
+
+### Other
+
+- Plane UI work ([#316](https://github.com/moq-dev/moq/pull/316))
+
+## [0.6.4](https://github.com/moq-dev/moq/compare/moq-native-v0.6.3...moq-native-v0.6.4) - 2025-01-24
+
+### Other
+
+- updated the following local packages: moq-transfork
+
+## [0.6.3](https://github.com/moq-dev/moq/compare/moq-native-v0.6.2...moq-native-v0.6.3) - 2025-01-16
+
+### Other
+
+- Remove the useless openssl dependency. ([#295](https://github.com/moq-dev/moq/pull/295))
+
+## [0.6.2](https://github.com/moq-dev/moq/compare/moq-native-v0.6.1...moq-native-v0.6.2) - 2025-01-16
+
+### Other
+
+- Retry connections to cluster nodes ([#290](https://github.com/moq-dev/moq/pull/290))
+- Switch to aws_lc_rs ([#287](https://github.com/moq-dev/moq/pull/287))
+- Support fetching fingerprint via native clients. ([#286](https://github.com/moq-dev/moq/pull/286))
+- Initial WASM contribute ([#283](https://github.com/moq-dev/moq/pull/283))
+
+## [0.6.1](https://github.com/moq-dev/moq/compare/moq-native-v0.6.0...moq-native-v0.6.1) - 2025-01-13
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.6.0](https://github.com/moq-dev/moq/compare/moq-native-v0.5.10...moq-native-v0.6.0) - 2025-01-13
+
+### Other
+
+- Raise the keep-alive. ([#278](https://github.com/moq-dev/moq/pull/278))
+- Replace mkcert with rcgen* ([#273](https://github.com/moq-dev/moq/pull/273))
+
+## [0.5.10](https://github.com/moq-dev/moq/compare/moq-native-v0.5.9...moq-native-v0.5.10) - 2024-12-12
+
+### Other
+
+- Add support for RUST_LOG again. ([#267](https://github.com/moq-dev/moq/pull/267))
+
+## [0.5.9](https://github.com/moq-dev/moq/compare/moq-native-v0.5.8...moq-native-v0.5.9) - 2024-12-04
+
+### Other
+
+- Move moq-gst and moq-web into the workspace. ([#258](https://github.com/moq-dev/moq/pull/258))
+
+## [0.5.8](https://github.com/moq-dev/moq/compare/moq-native-v0.5.7...moq-native-v0.5.8) - 2024-11-26
+
+### Other
+
+- updated the following local packages: moq-transfork
+
+## [0.5.7](https://github.com/moq-dev/moq/compare/moq-native-v0.5.6...moq-native-v0.5.7) - 2024-11-23
+
+### Other
+
+- updated the following local packages: moq-transfork
+
+## [0.5.6](https://github.com/moq-dev/moq/compare/moq-native-v0.5.5...moq-native-v0.5.6) - 2024-11-07
+
+### Other
+
+- Add some more/better logging. ([#227](https://github.com/moq-dev/moq/pull/227))
+- Auto upgrade dependencies with release-plz ([#224](https://github.com/moq-dev/moq/pull/224))
+
+## [0.5.5](https://github.com/moq-dev/moq/compare/moq-native-v0.5.4...moq-native-v0.5.5) - 2024-10-29
+
+### Other
+
+- Karp API improvements ([#220](https://github.com/moq-dev/moq/pull/220))
+
+## [0.5.4](https://github.com/moq-dev/moq/compare/moq-native-v0.5.3...moq-native-v0.5.4) - 2024-10-28
+
+### Other
+
+- updated the following local packages: moq-transfork
+
+## [0.5.3](https://github.com/moq-dev/moq/compare/moq-native-v0.5.2...moq-native-v0.5.3) - 2024-10-27
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.5.2](https://github.com/moq-dev/moq/compare/moq-native-v0.5.1...moq-native-v0.5.2) - 2024-10-18
+
+### Other
+
+- updated the following local packages: moq-transfork
+
+## [0.2.2](https://github.com/moq-dev/moq/compare/moq-native-v0.2.1...moq-native-v0.2.2) - 2024-07-24
+
+### Other
+- Add sslkeylogfile envvar for debugging ([#173](https://github.com/moq-dev/moq/pull/173))
+
+## [0.2.1](https://github.com/moq-dev/moq/compare/moq-native-v0.2.0...moq-native-v0.2.1) - 2024-06-03
+
+### Other
+- Revert "filter DNS query results to only include addresses that our quic endpoint can use ([#166](https://github.com/moq-dev/moq/pull/166))"
+- filter DNS query results to only include addresses that our quic endpoint can use ([#166](https://github.com/moq-dev/moq/pull/166))
+- Remove Cargo.lock from moq-transport

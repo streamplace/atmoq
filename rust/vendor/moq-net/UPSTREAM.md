@@ -9,6 +9,15 @@ diffs cleanly on top of the pristine base:
 2. Configurable per-track group retention (below).
 3. Pluggable `GroupSource` for a deep, out-of-RAM replay window (below).
 
+So that `cargo install atmoq` works before these land upstream, this copy is
+published to crates.io under the fork name
+[`atmoq-moq-net`](https://crates.io/crates/atmoq-moq-net) (the lib name stays
+`moq_net`; consumers use cargo dependency renaming). Its sibling
+`vendor/moq-native` republishes an *unmodified* `moq-native` 0.17.0 as
+`atmoq-moq-native` purely so its `moq-net` dependency resolves to this fork —
+types must be identical across the `moq-native` API boundary. Both fork crates
+get deprecated the moment upstream ships an equivalent.
+
 ## Change: configurable per-track group retention
 
 `src/model/track.rs` hardcodes how long the track cache retains groups:
