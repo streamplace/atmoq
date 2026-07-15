@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance attestation
+      id-token: write # OIDC token for npm trusted publishing + provenance
     env:
       # Expressions short-circuit, so the fromJSON arm is only evaluated on
       # push events, where the releases output is real JSON.
@@ -126,15 +126,25 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: ts/package.json
+      # Deliberately NO registry-url here: that would write an
+      # _authToken=$NODE_AUTH_TOKEN line to .npmrc, and any token config —
+      # even an empty one — preempts the OIDC exchange.
       - uses: actions/setup-node@v4
         with:
           node-version-file: ts/.nvmrc
           cache: pnpm
           cache-dependency-path: ts/pnpm-lock.yaml
-          registry-url: https://registry.npmjs.org
+      # Auth is npm "trusted publishing": the registry trusts this exact
+      # repo+workflow via OIDC — no NPM_TOKEN secret anywhere. Configured on
+      # npmjs.com under the package's Settings → Trusted Publisher (repo
+      # streamplace/atmoq, workflow release-plz.yml). Two hard limits:
+      #   - needs npm >= 11.5.1, and Node 22 bundles npm 10 — hence the
+      #     upgrade step below;
+      #   - it can only publish NEW VERSIONS of an EXISTING package
+      #     (npm/cli#8544): a brand-new package's first version must be
+      #     published by a human with a token.
+      - run: npm install -g npm@latest
       - working-directory: ts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           version=$(npm pkg get version | tr -d '"')
@@ -144,7 +154,8 @@ jobs:
             exit 0
           fi
           pnpm install --frozen-lockfile
-          # npm (not pnpm) publish for --provenance; prepublishOnly runs tsc.
+          # npm (not pnpm) publish: pnpm doesn't do the OIDC exchange.
+          # --provenance explicitly; prepublishOnly runs tsc.
           npm publish --access public --provenance
 
   # Tag the release commit as `go/vX.Y.Z` — the Go submodule tag convention —
