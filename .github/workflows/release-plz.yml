@@ -56,7 +56,7 @@ jobs:
             exit 0
           fi
           git fetch origin "$branch"
-          git checkout "$branch"
+          git checkout -B "$branch" "origin/$branch"
           version=$(grep -m1 '^version = ' rust/Cargo.toml | cut -d'"' -f2)
           (cd ts && npm pkg set version="$version")
           if git diff --quiet; then
