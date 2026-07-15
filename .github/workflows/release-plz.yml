@@ -3,6 +3,14 @@ name: release-plz
 on:
   push:
     branches: [main]
+  # Re-run the publish fan-out (npm + go tag) for a release that already
+  # exists — e.g. npm flaked after the tag was cut. Both jobs are idempotent,
+  # so re-publishing an already-complete tag is a no-op.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to re-publish (e.g. v0.1.0)"
+        required: true
 
 permissions:
   contents: write
@@ -18,6 +26,7 @@ jobs:
   # CHANGELOG.md. Merge that PR to cut a release (handled by the `release` job).
   release-pr:
     name: release PR
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +81,9 @@ jobs:
   # cut the git tag + GitHub release and publish atmoq to crates.io
   # (publish=true in release-plz.toml; deps resolve to the atmoq-moq-* forks).
   # The npm-publish and go-tag jobs below fan out from this one.
+  # Also runs on workflow_dispatch (so `needs: release` is satisfied); with
+  # everything already released it's a no-op reporting releases_created=false,
+  # and the fan-out jobs take their tag from the dispatch input instead.
   release:
     name: tag + GitHub release
     runs-on: ubuntu-latest
@@ -97,17 +109,23 @@ jobs:
   npm-publish:
     name: npm publish
     needs: release
-    if: needs.release.outputs.releases_created == 'true'
+    if: needs.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # npm provenance attestation
+    env:
+      # Expressions short-circuit, so the fromJSON arm is only evaluated on
+      # push events, where the releases output is real JSON.
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || fromJSON(needs.release.outputs.releases)[0].tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+          ref: ${{ env.TAG }}
       # pnpm version comes from ts/package.json's packageManager field.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ts/package.json
       - uses: actions/setup-node@v4
         with:
           node-version-file: ts/.nvmrc
@@ -136,12 +154,12 @@ jobs:
   go-tag:
     name: go module tag
     needs: release
-    if: needs.release.outputs.releases_created == 'true'
+    if: needs.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      TAG: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || fromJSON(needs.release.outputs.releases)[0].tag }}
     steps:
       - uses: actions/checkout@v4
         with:
