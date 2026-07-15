@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.2](https://github.com/streamplace/atmoq/compare/v0.0.1...v0.0.2) - 2026-06-27
+## [0.1.0](https://github.com/streamplace/atmoq/compare/v0.0.2...v0.1.0) - 2026-07-14
+
+First release on the unified train: this version ships simultaneously to
+crates.io (`atmoq`), npm (`@streamplace/atmoq`), and as the Go module tag
+`go/v0.1.0` — one version, one commit, three ecosystems.
+
+### Other
+
+- vendor patched moq-net/moq-native in-tree, published as atmoq-moq-net /
+  atmoq-moq-native, so `cargo install atmoq` works from crates.io again
+- DRISL-strict validation at relay ingest and in all three clients (Rust, TS, Go)
+- store: v2 record format, size-bounded GC (--max-store-bytes), torn-tail
+  truncation, disk reads outside the store lock, resilient startup
+- serve: atomic state-file writes; never reuse the in-progress group's
+  sequence across restarts
+- relay: stop republishing upstream error frames; detect seq regression
+- router: fix unused-watcher race; configurable per-DID track cap
+- go: client hardened against hostile sizes, stalls, and shutdown leaks
+- ts: group-boundary frame loss fixed, close() race fixed, certHashes connect
+  option, @atproto/lex-cbor, pure-JSONL CLI output
+- e2e: diff all three clients against PDS ground truth
 
 ### Other
 

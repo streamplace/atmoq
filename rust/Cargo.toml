@@ -7,7 +7,7 @@ members = ["crates/atmoq"]
 exclude = ["vendor/moq-net", "vendor/moq-native"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/streamplace/atmoq"

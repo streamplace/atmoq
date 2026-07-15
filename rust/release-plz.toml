@@ -15,10 +15,16 @@
 # crates/atmoq/Cargo.toml. (This whole arrangement dies when the patches land
 # upstream — see vendor/moq-net/UPSTREAM.md.)
 
-# Monorepo: the Rust client lives in rust/. To keep its release cadence
-# independent of the Go client (go/, which tags go/vX.Y.Z), release-plz cuts
-# `rust-vX.Y.Z` tags. The release workflow points release-plz at rust/Cargo.toml
-# via its manifest_path input; this config sits next to that manifest.
+# Monorepo, ONE release train: the Rust workspace (rust/) is the source of
+# truth for the project version, and release-plz drives everything from it. The
+# release workflow keeps the other ecosystems on the same version:
+#   - the release-pr job syncs ts/package.json to the new version inside the
+#     release PR, so merging it bumps both;
+#   - on release, the npm-publish job publishes ts/ to npm and the go-tag job
+#     pushes `go/vX.Y.Z` (the Go submodule tag convention) at the same commit.
+# So one `vX.Y.Z` means the same commit on crates.io, npm, and the Go proxy.
+# The release workflow points release-plz at rust/Cargo.toml via its
+# manifest_path input; this config sits next to that manifest.
 
 [workspace]
 # Publish atmoq to crates.io on release (deps resolve to the atmoq-moq-* forks).
@@ -26,9 +32,10 @@ publish = true
 # Still cut a git tag and a GitHub release for every version bump.
 git_tag_enable = true
 git_release_enable = true
-# Tag as `rust-v0.1.0` to avoid collision with the Go client's `go/vX.Y.Z` tags.
-git_tag_name = "rust-v{{ version }}"
-git_release_name = "rust-v{{ version }}"
+# Plain `vX.Y.Z`: this is the whole project's release tag (continues the
+# v0.0.1/v0.0.2 series). Go's per-module `go/vX.Y.Z` tags live alongside it.
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
 # Keep CHANGELOG.md generated from conventional commits.
 changelog_update = true
 # Pre-1.0: keep breaking changes bumping the patch/minor as usual rather than

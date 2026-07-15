@@ -23,6 +23,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Check out with the PAT when available so the ts-version-sync push
+          # below triggers CI on the release PR, same as release-plz's own push.
+          token: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
@@ -35,10 +38,40 @@ jobs:
           # one we fall back to GITHUB_TOKEN, which still works but won't
           # trigger the CI workflow on the PR it opens.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+      # ONE release train (see rust/release-plz.toml): the release PR also
+      # carries the matching ts/package.json bump, so merging it moves every
+      # ecosystem to the new version. release-plz force-pushes its branch on
+      # each main push, wiping this commit — that's fine, we re-apply here
+      # right after it, every run. Go needs nothing: its version lives only
+      # in the `go/vX.Y.Z` tag the release cuts.
+      - name: sync ts version into the release PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch=$(gh pr list --state open --json headRefName \
+            --jq '[.[].headRefName | select(startswith("release-plz-"))][0] // empty')
+          if [ -z "$branch" ]; then
+            echo "no open release-plz PR; nothing to sync"
+            exit 0
+          fi
+          git fetch origin "$branch"
+          git checkout -B "$branch" "origin/$branch"
+          version=$(grep -m1 '^version = ' rust/Cargo.toml | cut -d'"' -f2)
+          (cd ts && npm pkg set version="$version")
+          if git diff --quiet; then
+            echo "ts already at $version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: sync ts version to $version"
+          git push origin "$branch"
 
   # When the release PR merges (Cargo.toml version is ahead of the latest tag),
-  # cut the git tag and the GitHub release. publish=false in release-plz.toml
-  # keeps it off crates.io (git deps make the crate unpublishable there).
+  # cut the git tag + GitHub release and publish atmoq to crates.io
+  # (publish=true in release-plz.toml; deps resolve to the atmoq-moq-* forks).
+  # The npm-publish and go-tag jobs below fan out from this one.
   release:
     name: tag + GitHub release
     runs-on: ubuntu-latest
@@ -57,6 +90,75 @@ jobs:
           manifest_path: rust/Cargo.toml
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Publish @streamplace/atmoq to npm at the version the release PR synced into
+  # ts/package.json (identical to the crate version by construction).
+  npm-publish:
+    name: npm publish
+    needs: release
+    if: needs.release.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance attestation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      # pnpm version comes from ts/package.json's packageManager field.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ts/.nvmrc
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+      - working-directory: ts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(npm pkg get version | tr -d '"')
+          # Idempotent on re-run: a version can only be published once.
+          if npm view "@streamplace/atmoq@$version" version >/dev/null 2>&1; then
+            echo "@streamplace/atmoq@$version already on npm; skipping"
+            exit 0
+          fi
+          pnpm install --frozen-lockfile
+          # npm (not pnpm) publish for --provenance; prepublishOnly runs tsc.
+          npm publish --access public --provenance
+
+  # Tag the release commit as `go/vX.Y.Z` — the Go submodule tag convention —
+  # so `go get github.com/streamplace/atmoq/go@vX.Y.Z` resolves. Tags pushed
+  # with GITHUB_TOKEN don't trigger workflows, which is fine: the Go proxy
+  # picks the tag up on demand, no publish step exists.
+  go-tag:
+    name: go module tag
+    needs: release
+    if: needs.release.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - run: |
+          set -euo pipefail
+          gotag="go/v${TAG#v}"
+          # Never move an existing Go tag: the module proxy + sumdb have
+          # cached it, and a moved tag breaks checksum verification for
+          # everyone. If it exists at a different commit, that version is
+          # burned for Go — cut the next release instead.
+          if git ls-remote --exit-code --tags origin "refs/tags/$gotag" >/dev/null; then
+            echo "$gotag already exists on origin; leaving it alone"
+            exit 0
+          fi
+          git tag "$gotag"
+          git push origin "$gotag"
 
   # Build native binaries for each target and attach them to the release that
   # the `release` job just created. Gated so it only runs on an actual release.
