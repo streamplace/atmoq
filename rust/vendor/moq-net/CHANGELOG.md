@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-07-15 (atmoq-moq-net fork)
+
+### Fixed
+
+- `Writer::write`/`Writer::encode` are now cancel-safe: they no longer route
+  through the transport adapter's `write_buf`, whose web-transport-quinn
+  override advances the caller's buffer before awaiting the QUIC write.
+  Cancelling a write parked on flow control (serve_group races writes against
+  priority changes) silently lost bytes and corrupted every remaining frame in
+  the group stream. See UPSTREAM.md for the full analysis.
+
 ## [0.1.10](https://github.com/moq-dev/moq/compare/moq-net-v0.1.9...moq-net-v0.1.10) - 2026-06-10
 
 ### Added

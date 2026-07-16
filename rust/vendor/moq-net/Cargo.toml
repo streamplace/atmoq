@@ -17,7 +17,7 @@ rust-version = "1.85"
 # The lib name stays `moq_net`, so consumers use dependency renaming:
 #   moq-net = { package = "atmoq-moq-net", version = "..." }
 name = "atmoq-moq-net"
-version = "0.1.10"
+version = "0.1.11"
 authors = ["Luke Curley", "Eli Mallon <eli@aquareum.tv>"]
 build = false
 autolib = false

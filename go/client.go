@@ -227,7 +227,11 @@ func (s *Session) subscribe(ctx context.Context, broadcast, track string, startG
 	// Start routing server-pushed group streams once a subscription exists.
 	s.acceptOnce.Do(func() { go s.acceptLoop() })
 
-	s.log.Info("atmoq subscribed", "broadcast", broadcast, "track", track, "id", id, "startGroup", startGroup)
+	startLog := any("live")
+	if startGroup != nil {
+		startLog = *startGroup
+	}
+	s.log.Info("atmoq subscribed", "broadcast", broadcast, "track", track, "id", id, "startGroup", startLog)
 	return sub, nil
 }
 

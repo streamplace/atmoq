@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+use bytes::Buf;
+
 use crate::{Error, coding::*, ietf};
 
 /// A wrapper around a [web_transport_trait::SendStream] that will reset on Drop.
@@ -28,25 +30,40 @@ impl<S: web_transport_trait::SendStream, V> Writer<S, V> {
 		msg.encode(&mut self.buffer, self.version.clone())?;
 
 		while !self.buffer.is_empty() {
-			self.stream
+			let n = self
+				.stream
 				.as_mut()
 				.unwrap()
-				.write_buf(&mut self.buffer)
+				.write(self.buffer.chunk())
 				.await
 				.map_err(Error::from_transport)?;
+			self.buffer.advance(n);
 		}
 
 		Ok(())
 	}
 
 	// Not public to avoid accidental partial writes.
+	//
+	// CANCEL-SAFETY: this must use `SendStream::write` (borrowed slice) and only
+	// advance `buf` after the transport accepted the bytes. It must NOT use the
+	// adapter's `write_buf`: web-transport-quinn's override consumes the caller's
+	// buffer (`copy_to_bytes`) BEFORE awaiting the transport write, so a caller
+	// that races this future in a `select!` (serve_group races writes against
+	// priority changes) and drops it while parked on flow control silently loses
+	// the consumed bytes — every later byte in the stream lands at the wrong
+	// offset, corrupting all remaining frames in the group. Observed in
+	// production as spliced firehose frames at the backfill→live seam.
 	async fn write<Buf: bytes::Buf + Send>(&mut self, buf: &mut Buf) -> Result<usize, Error> {
-		self.stream
+		let n = self
+			.stream
 			.as_mut()
 			.unwrap()
-			.write_buf(buf)
+			.write(buf.chunk())
 			.await
-			.map_err(Error::from_transport)
+			.map_err(Error::from_transport)?;
+		buf.advance(n);
+		Ok(n)
 	}
 
 	/// Write the entire `Buf` to the stream.

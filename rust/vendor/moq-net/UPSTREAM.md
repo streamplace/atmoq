@@ -90,3 +90,38 @@ backfill task, never in the hot live loop). A maintainer might prefer an async
 trait, a `Stream`-returning API, or folding the source into the existing
 `Track` cache as a tiered backing store — hence keeping it an isolated,
 easy-to-rebase commit rather than a fork.
+
+## Change: cancel-safe `Writer::write` (bug fix, 0.1.11)
+
+`src/coding/writer.rs` previously wrote through the transport adapter's
+`write_buf`. `web-transport-quinn` (0.11.9) overrides the trait's (cancel-safe)
+default with a zero-copy version that `copy_to_bytes(..)` — i.e. **advances the
+caller's buffer** — *before* awaiting the QUIC write:
+
+```rust
+async fn write_buf<B: Buf + Send>(&mut self, buf: &mut B) -> Result<usize, Self::Error> {
+    let size = buf.chunk().len();
+    let chunk = buf.copy_to_bytes(size); // caller's cursor advanced here
+    self.write_chunk(chunk).await?;      // cancellation point: bytes lost
+    Ok(size)
+}
+```
+
+`serve_group` in `src/lite/publisher.rs` races `stream.write_all(&mut chunk)`
+against priority-change futures in a `select!`. When a priority wakeup fires
+while the write is parked on flow control, the future is dropped and the
+consumed-but-unwritten bytes vanish; every subsequent byte in the group stream
+lands at the wrong offset, corrupting all remaining frames. In practice this
+triggered when a deep-resume backfill caught up to the live edge (many
+concurrent `serve_group` tasks → priority churn, saturated send window →
+backpressure), splicing atproto firehose frames.
+
+The fix routes `Writer::write` / `Writer::encode` through `SendStream::write`
+(borrowed slice) and advances the buffer only after the transport accepts the
+bytes, restoring the cancel-safety the trait's own default provides.
+
+**Upstream note:** the underlying bug is in `web-transport-quinn`'s `write_buf`
+override (or, arguably, in `select!`-racing a non-cancel-safe write). Worth
+filing against both: web-transport-quinn's override violates the implicit
+cancel-safety contract of the trait default, and every `moq-net` release built
+on it can corrupt streams under priority churn + backpressure.

@@ -16,10 +16,13 @@ const BANNER: &str = r#"        _
 "#;
 
 pub fn landing_page(host: &str, broadcast: &str, track: &str) -> String {
+    // Version in the banner so "what build is production running" is one curl
+    // away (deploys are otherwise indistinguishable from the outside).
+    let version = env!("CARGO_PKG_VERSION");
     format!(
         "{BANNER}\n\
         This is an atproto [https://atproto.com] relay,\n\
-        running the 'atmoq' codebase [https://github.com/streamplace/atmoq],\n\
+        running the 'atmoq' codebase [https://github.com/streamplace/atmoq] v{version},\n\
         serving the firehose over MoQ [https://moq.dev].\n\
         \n\
         The firehose MoQ broadcast is at:\n\
