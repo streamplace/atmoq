@@ -22,7 +22,7 @@ futures-util.workspace = true
 # in-tree copy locally, and the version is what the published crate resolves.
 moq-native = { package = "atmoq-moq-native", version = "0.17.0", path = "../../vendor/moq-native" }
 moq-native-07.workspace = true
-moq-net = { package = "atmoq-moq-net", version = "0.1.10", path = "../../vendor/moq-net" }
+moq-net = { package = "atmoq-moq-net", version = "0.1.11", path = "../../vendor/moq-net" }
 moq-transport-07.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 rustls-pemfile = "2"
