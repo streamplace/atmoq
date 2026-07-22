@@ -1,0 +1,14 @@
+{
+  "name": "atmoq-commit-gen",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Generates real signed #commit firehose frames with targeted defects",
+  "dependencies": {
+    "@atproto/repo": "^0.8.12",
+    "@atproto/crypto": "^0.4.5",
+    "@atproto/common": "^0.4.11",
+    "@ipld/dag-cbor": "^9",
+    "multiformats": "^13"
+  }
+}

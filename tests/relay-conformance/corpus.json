@@ -1,0 +1,354 @@
+[
+  {
+    "id": "framing/single-object",
+    "layer": "framing",
+    "title": "header only, no payload object",
+    "note": "One CBOR item where the frame contract requires two.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001"
+  },
+  {
+    "id": "framing/trailing-bytes",
+    "layer": "framing",
+    "title": "valid frame + one trailing byte",
+    "note": "Extra byte after the payload item within the same message.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a46364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f500"
+  },
+  {
+    "id": "framing/empty-message",
+    "layer": "framing",
+    "title": "zero-length binary message",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": ""
+  },
+  {
+    "id": "cbor/truncated-payload",
+    "layer": "cbor",
+    "title": "payload truncated mid-item",
+    "note": "Header ok; payload claims a 4-byte string but supplies 2.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a163646964646162"
+  },
+  {
+    "id": "cbor/reserved-ai-payload",
+    "layer": "cbor",
+    "title": "reserved additional-info 28 in payload",
+    "note": "Initial byte 0x1c — AI 28 is reserved/undefined in CBOR.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f70011c"
+  },
+  {
+    "id": "cbor/bare-break-payload",
+    "layer": "cbor",
+    "title": "bare break code (0xff) as payload",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001ff"
+  },
+  {
+    "id": "cbor/garbage-payload",
+    "layer": "cbor",
+    "title": "random non-CBOR bytes as payload",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001deadbeef"
+  },
+  {
+    "id": "drisl/unordered-keys-payload",
+    "layer": "drisl",
+    "title": "payload map keys out of DRISL order",
+    "note": "Complete #account, keys in reverse (active,time,seq,did).",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a466616374697665f56474696d657818323032362d30372d31395430303a30303a30302e3030305a6373657118646364696478226469643a706c633a636f6e666f726d616e6365303030303030303030303030303030"
+  },
+  {
+    "id": "drisl/unordered-keys-header",
+    "layer": "drisl",
+    "title": "header keys out of DRISL order (op before t)",
+    "note": "op sorts after t but is emitted first.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2626f7001617468236163636f756e74a46364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/duplicate-key-payload",
+    "layer": "drisl",
+    "title": "duplicate map key in payload",
+    "note": "seq appears twice.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a5637365711864637365711903e76364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/nonminimal-int-payload",
+    "layer": "drisl",
+    "title": "non-minimal integer encoding in payload",
+    "note": "seq value 1 encoded as a 2-byte uint (0x19 0x00 0x01).",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a46364696478226469643a706c633a636f6e666f726d616e6365303030303030303030303030303030637365711900016474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/nonminimal-len-payload",
+    "layer": "drisl",
+    "title": "non-minimal string length in payload",
+    "note": "3-char did value length encoded in 1 extra byte (0x78 0x03).",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a46364696478036162636373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/indefinite-map-payload",
+    "layer": "drisl",
+    "title": "indefinite-length map in payload",
+    "note": "0xbf ... 0xff instead of a definite count.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001bf6373657118646364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5ff"
+  },
+  {
+    "id": "drisl/indefinite-str-payload",
+    "layer": "drisl",
+    "title": "indefinite-length text string in payload",
+    "note": "did value as a chunked indefinite string.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a4636469647f646469643a6178ff6373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/float16-payload",
+    "layer": "drisl-float",
+    "title": "float16 value in a (forward-compat) field",
+    "note": "Half-precision (0xf9); DRISL allows only 64-bit floats.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178f93c006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/float32-payload",
+    "layer": "drisl-float",
+    "title": "float32 value in a field",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178fa3f8000006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/float64-ok-payload",
+    "layer": "drisl-float",
+    "title": "float64 value in a field (CONTROL: valid DRISL)",
+    "note": "64-bit float is legal DRISL; a strict relay must NOT reject this.",
+    "expect": {
+      "strict": "accept",
+      "tolerant": "accept"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178fb3ff80000000000006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/nan-payload",
+    "layer": "drisl-float",
+    "title": "float64 NaN in a field",
+    "note": "Right width, forbidden value.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178fb7ff80000000000006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/infinity-payload",
+    "layer": "drisl-float",
+    "title": "float64 +Infinity in a field",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178fb7ff00000000000006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/undefined-payload",
+    "layer": "drisl-float",
+    "title": "CBOR undefined (0xf7) as a field value",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178f76364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/simple-value-payload",
+    "layer": "drisl-float",
+    "title": "disallowed simple value simple(19) (0xf3)",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178f36364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/tag-0-payload",
+    "layer": "drisl-tag",
+    "title": "CBOR tag 0 (datetime) in a field",
+    "note": "Only tag 42 is allowed anywhere in atproto data.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178c074323032362d30372d31395430303a30303a30305a6364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/tag-2-bignum-payload",
+    "layer": "drisl-tag",
+    "title": "CBOR tag 2 (bignum) in a field",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178c24201006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/tag-42-ok-payload",
+    "layer": "drisl-tag",
+    "title": "CBOR tag 42 CID in a field (CONTROL: valid DRISL)",
+    "note": "Tag 42 wrapping a 0x00-prefixed byte string is the only legal tag.",
+    "expect": {
+      "strict": "accept",
+      "tolerant": "accept"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178d82a5825000171122000000000000000000000000000000000000000000000000000000000000000006364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/tag-42-no-prefix-payload",
+    "layer": "drisl-tag",
+    "title": "tag 42 whose byte string lacks the 0x00 prefix",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56178d82a4201716364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "drisl/int-map-key-payload",
+    "layer": "drisl-tag",
+    "title": "integer map key in payload",
+    "note": "DRISL requires text-string keys; this map is {1: 2}.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a10102"
+  },
+  {
+    "id": "drisl/invalid-utf8-payload",
+    "layer": "drisl-tag",
+    "title": "invalid UTF-8 in the did text string",
+    "note": "did value bytes 0xc3 0x28 are not valid UTF-8.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a2617468236163636f756e74626f7001a46364696462c3286373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "sync/unknown-type",
+    "layer": "at-sync",
+    "title": "unknown message type #futurething",
+    "note": "THE forward-compat case: an event type a relay predates.",
+    "expect": {
+      "strict": "either",
+      "tolerant": "accept"
+    },
+    "hex": "a261746c236675747572657468696e67626f7001a36364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a"
+  },
+  {
+    "id": "sync/unknown-field",
+    "layer": "at-sync",
+    "title": "known type with an unknown extra field",
+    "note": "Forward-compat: #account gains a future field. Preserved? Dropped?",
+    "expect": {
+      "strict": "accept",
+      "tolerant": "accept"
+    },
+    "hex": "a2617468236163636f756e74626f7001a56364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5677a6675747572656f68656c6c6f2066726f6d2032303237"
+  },
+  {
+    "id": "sync/missing-seq",
+    "layer": "at-sync",
+    "title": "#account payload missing required seq",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a36364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "sync/wrong-type-seq",
+    "layer": "at-sync",
+    "title": "seq encoded as a text string",
+    "note": "Field present but wrong CBOR type.",
+    "expect": {
+      "strict": "reject",
+      "tolerant": "either"
+    },
+    "hex": "a2617468236163636f756e74626f7001a46364696478226469643a706c633a636f6e666f726d616e6365303030303030303030303030303030637365716234326474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  },
+  {
+    "id": "sync/op-1-no-t",
+    "layer": "at-sync",
+    "title": "op:1 header with no t",
+    "note": null,
+    "expect": {
+      "strict": "reject",
+      "tolerant": "reject"
+    },
+    "hex": "a1626f7001a46364696478226469643a706c633a636f6e666f726d616e63653030303030303030303030303030306373657118646474696d657818323032362d30372d31395430303a30303a30302e3030305a66616374697665f5"
+  }
+]

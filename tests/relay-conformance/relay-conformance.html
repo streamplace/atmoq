@@ -1,0 +1,480 @@
+<meta charset="utf-8">
+<title>atproto relay conformance — invalid firehose data</title>
+<style>
+:root{
+  --ground:#f4f6f9; --panel:#ffffff; --panel-2:#f9fafc;
+  --ink:#151820; --muted:#5c6472; --faint:#8a92a1; --hairline:#e3e7ee;
+  --accent:#4451d6; --accent-soft:#eceeff;
+  --reject-bg:#e8eafc; --reject-ink:#3340c0; --reject-br:#c9cef6;
+  --accept-bg:#f7ecd6; --accept-ink:#8a5a17; --accept-br:#ecd9b4;
+  --flag:#d9902a; --flag-soft:#fbf3e6;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --ground:#0e1015; --panel:#161922; --panel-2:#1b1f2a;
+  --ink:#e7eaf1; --muted:#9aa2b2; --faint:#6b7484; --hairline:#262b37;
+  --accent:#8b95f0; --accent-soft:#1c2140;
+  --reject-bg:#22284f; --reject-ink:#b8c0ff; --reject-br:#343d72;
+  --accept-bg:#3a2f1a; --accept-ink:#e9c88a; --accept-br:#54431f;
+  --flag:#e0a955; --flag-soft:#2b2415;
+}}
+:root[data-theme="light"]{
+  --ground:#f4f6f9; --panel:#ffffff; --panel-2:#f9fafc;
+  --ink:#151820; --muted:#5c6472; --faint:#8a92a1; --hairline:#e3e7ee;
+  --accent:#4451d6; --accent-soft:#eceeff;
+  --reject-bg:#e8eafc; --reject-ink:#3340c0; --reject-br:#c9cef6;
+  --accept-bg:#f7ecd6; --accept-ink:#8a5a17; --accept-br:#ecd9b4;
+  --flag:#d9902a; --flag-soft:#fbf3e6;
+}
+:root[data-theme="dark"]{
+  --ground:#0e1015; --panel:#161922; --panel-2:#1b1f2a;
+  --ink:#e7eaf1; --muted:#9aa2b2; --faint:#6b7484; --hairline:#262b37;
+  --accent:#8b95f0; --accent-soft:#1c2140;
+  --reject-bg:#22284f; --reject-ink:#b8c0ff; --reject-br:#343d72;
+  --accept-bg:#3a2f1a; --accept-ink:#e9c88a; --accept-br:#54431f;
+  --flag:#e0a955; --flag-soft:#2b2415;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased;font-size:16px}
+.wrap{max-width:1060px;margin:0 auto;padding:clamp(20px,5vw,56px) clamp(16px,4vw,40px) 64px}
+a{color:var(--accent)}
+.mono{font-family:var(--mono);font-size:.92em}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+h1{font-size:clamp(28px,4.6vw,44px);line-height:1.08;letter-spacing:-.02em;margin:.35em 0 .1em;text-wrap:balance;font-weight:700}
+.sub{font-size:clamp(16px,2vw,19px);color:var(--muted);max-width:66ch;margin:.4em 0 0}
+.meta{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin-top:14px;display:flex;gap:18px;flex-wrap:wrap}
+.meta b{color:var(--muted);font-weight:600}
+.thesis{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--hairline);border:1px solid var(--hairline);border-radius:14px;overflow:hidden;margin:34px 0 8px}
+.stat{background:var(--panel);padding:20px 22px}
+.stat .n{font-family:var(--mono);font-size:34px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1}
+.stat.big .n{color:var(--flag)}
+.stat .l{font-size:13.5px;color:var(--muted);margin-top:8px;max-width:28ch}
+.stat .frac{font-size:15px;color:var(--faint);font-family:var(--mono)}
+.thesis-note{font-size:12.5px;color:var(--faint);margin:10px 2px 0}
+h2{font-size:20px;letter-spacing:-.015em;font-weight:700;margin:0}
+.sec-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:46px 0 14px;padding-bottom:12px;border-bottom:1px solid var(--hairline)}
+.sec-sub{margin:5px 0 0;font-size:13.5px;color:var(--muted);max-width:60ch}
+.ministat{display:flex;gap:14px;font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+.ministat b{font-size:15px;color:var(--ink)}
+.mini{display:flex;gap:5px;align-items:baseline}
+.h2bar{font-size:13px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:44px 0 16px;padding-bottom:10px;border-bottom:1px solid var(--hairline)}
+.policies{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+.policy{background:var(--panel);border:1px solid var(--hairline);border-radius:12px;padding:16px 17px;border-top:3px solid var(--accent)}
+.policy header{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.pname{font-family:var(--mono);font-size:17px;font-weight:700}
+.ptag{font-family:var(--mono);font-size:10.5px;color:var(--faint);letter-spacing:.02em}
+.preject{margin:12px 0 8px;font-size:14px}
+.preject .k{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:2px}
+.pbody{margin:0;font-size:13px;color:var(--muted);line-height:1.5}
+/* overflow:clip (not hidden/auto) keeps the rounded corners + wide-table clipping
+   WITHOUT establishing a scroll container, so the sticky header below references
+   the page viewport and floats as you scroll. Horizontal scroll returns on narrow
+   screens via the media query at the end. */
+.tablecard{background:var(--panel);border:1px solid var(--hairline);border-radius:14px;overflow:clip;margin-top:4px}
+.scroll{overflow-x:clip}
+table{border-collapse:collapse;width:100%;min-width:800px}
+thead th{position:sticky;top:0;background:var(--panel);z-index:5}
+.head th{text-align:left;padding:16px 14px 12px;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;box-shadow:inset 0 -1px 0 var(--hairline),0 6px 10px -8px rgba(0,0,0,.22)}
+.head th.v{text-align:center;font-size:14px;letter-spacing:0;text-transform:none;color:var(--ink);font-weight:700}
+.head th.consensus{width:34px}
+.layer-head th{padding:14px 14px 8px;background:var(--panel-2);border-bottom:1px solid var(--hairline)}
+.lname{font-weight:700;font-size:14px;margin-right:12px}
+.ldesc{color:var(--faint);font-size:12.5px;font-family:var(--mono)}
+.row td{padding:11px 14px;border-bottom:1px solid var(--hairline);vertical-align:middle}
+tbody.layer:last-child .row:last-child td{border-bottom:none}
+.row.split{background:linear-gradient(90deg,var(--flag-soft),transparent 60%)}
+.row.split td.case{box-shadow:inset 3px 0 0 var(--flag)}
+.case-title{font-size:14.5px;font-weight:600;letter-spacing:-.005em}
+.case-id{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:3px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+td.v{text-align:center;white-space:nowrap}
+.chip{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;padding:4px 9px;border-radius:6px;border:1px solid transparent}
+.chip.reject{background:var(--reject-bg);color:var(--reject-ink);border-color:var(--reject-br)}
+.chip.accept{background:var(--accept-bg);color:var(--accept-ink);border-color:var(--accept-br)}
+.chip.skip{background:transparent;color:var(--faint);border-color:var(--hairline)}
+.chip.pending{background:transparent;color:var(--faint);border-color:var(--hairline);letter-spacing:.15em}
+.consensus{text-align:center}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%}
+.dot.split{background:var(--flag)}
+.dot.reject{background:var(--reject-br)}
+.dot.accept{background:var(--accept-br)}
+.dot.pending{background:var(--hairline)}
+.tag{font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:.04em;padding:1.5px 6px;border-radius:4px;text-transform:uppercase}
+.tag.control,.tag.fwd{background:var(--accent-soft);color:var(--accent)}
+.tag.rep{background:var(--flag-soft);color:var(--flag)}
+.tag.dag{background:transparent;color:var(--faint);border:1px solid var(--hairline);text-transform:none;letter-spacing:0}
+.legend{display:flex;gap:20px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);font-family:var(--mono);margin:14px 2px 0;align-items:center}
+.legend .li{display:flex;align-items:center;gap:7px}
+.findings{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px}
+.finding{background:var(--panel);border:1px solid var(--hairline);border-radius:12px;padding:16px 18px}
+.finding h3{margin:0 0 6px;font-size:15px;font-weight:700;letter-spacing:-.01em}
+.finding p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.55}
+.finding .mono{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+.foot{margin-top:44px;padding-top:18px;border-top:1px solid var(--hairline);font-family:var(--mono);font-size:12px;color:var(--faint);line-height:1.7}
+.foot b{color:var(--muted);font-weight:600}
+@media (max-width:820px){.thesis,.policies,.findings{grid-template-columns:1fr}}
+/* below the table's min-width, re-enable horizontal scroll (sticky header yields here) */
+@media (max-width:900px){.scroll{overflow-x:auto}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">atproto relay conformance · invalid firehose data</div>
+    <h1>Five relays, five definitions of &ldquo;invalid&rdquo;</h1>
+    <p class="sub">The same malformed <span class="mono">subscribeRepos</span> frame, fed to each relay's real decoder and commit-verifier — Rust, Go, and Zig. One defect per frame, so every verdict is attributable — across <span class="mono">#account</span> events, real signed <span class="mono">#commit</span>s carrying a CAR of blocks, and stateful <span class="mono">#sync</span>/sync-1.1 commit sequences.</p>
+    <div class="meta"><span><b>49</b> cases</span><span><b>5</b> relays</span><span><b>#account</b> · <b>#commit</b> · <b>sync-1.1</b></span><span>2026-07-21</span></div>
+  </header>
+
+  <section class="thesis">
+    <div class="stat big"><div class="n">22<span class="frac">&thinsp;/&thinsp;32</span></div><div class="l"><span class="mono">#account</span> cases where at least two relays <b style="color:var(--flag)">disagree</b></div></div>
+    <div class="stat"><div class="n">3<span class="frac">&thinsp;/&thinsp;5</span></div><div class="l">relays that <b>forward</b> a commit signed by the <b>wrong key</b> (atmoq, rsky, zlay) — only indigo &amp; hydrant drop it</div></div>
+    <div class="stat"><div class="n">1<span class="frac">&thinsp;/&thinsp;5</span></div><div class="l">relays that enforce <span class="mono">prevData</span> correctness (<b>hydrant</b>) — sync-1.1's core guarantee, honored by one</div></div>
+  </section>
+  <p class="thesis-note">Even the <span class="mono">float64</span> &ldquo;control&rdquo; splits: zlay's DAG-CBOR decoder rejects <em>all</em> floats, so only the tag-42 control and the valid signed commit are accepted by all five.</p>
+
+  <div class="h2bar">What a &ldquo;reject&rdquo; actually does</div>
+  <div class="policies"><article class="policy atmoq">
+  <header><span class="pname">atmoq</span><span class="ptag">Rust · DRISL-strict</span></header>
+  <p class="preject"><span class="k">on reject</span> drops the <b>frame</b>, connection stays up</p>
+  <p class="pbody">Validates the whole frame against DRISL at ingest — <b>encoding only</b>. It treats the commit's CAR as opaque bytes, so it does no signature, CID, MST, or record checks (that's its unbuilt M2).</p></article>
+<article class="policy indigo">
+  <header><span class="pname">indigo</span><span class="ptag">Go · cbor-gen · production</span></header>
+  <p class="preject"><span class="k">on reject</span> drops the <b>whole PDS connection</b> &amp; reconnects</p>
+  <p class="pbody">A frame CBOR-decode error unwinds the socket. Commit repo/MST/signature failures instead drop one event — and MST/record-presence checks are <b>advisory</b> (logged, not enforced).</p></article>
+<article class="policy rsky">
+  <header><span class="pname">rsky</span><span class="ptag">Rust · serde_ipld_dagcbor</span></header>
+  <p class="preject"><span class="k">on reject</span> drops the <b>event</b>, connection stays up</p>
+  <p class="pbody">Lenient ciborium header, stricter dag-cbor body. CAR CID integrity &amp; envelope checks are enforced; but default <b>lenient mode publishes signature failures</b>, and record-presence is a TODO.</p></article>
+<article class="policy hydrant">
+  <header><span class="pname">hydrant</span><span class="ptag">Rust · jacquard · strictest default</span></header>
+  <p class="preject"><span class="k">on reject</span> CBOR error drops the <b>connection</b>; else drops the <b>event</b></p>
+  <p class="pbody">Always resolves the signing key, so signature verify <b>and</b> MST inversion run by default. Uniquely decodes record CBOR and <b>enforces prevData correctness</b> (inverts the MST and checks the root). Unknown types skip one frame, not the socket. <span class="mono">verify_cids</span> off by default.</p></article>
+<article class="policy zlay">
+  <header><span class="pname">zlay</span><span class="ptag">Zig · zat SDK · fail-open</span></header>
+  <p class="preject"><span class="k">on reject</span> drops the <b>frame</b>, connection stays up</p>
+  <p class="pbody"><span class="mono">zat.cbor</span> is a strict whole-frame DAG-CBOR decoder, so it matches atmoq on encoding — and goes further, rejecting <b>all</b> floats incl. float64. But its commit/sync path is <b>fail-open</b>: a bad signature, bad CID, or cache miss <em>forwards the frame unvalidated</em> and re-resolves the key in the background — it never drops a commit on crypto.</p></article></div>
+
+  <div class="sec-head"><div><h2 id="account">Malformed #account frames</h2><p class="sec-sub">Signature- and CAR-free events: a reject can only mean the encoding or shape was rejected.</p></div><div class="ministat"><span class="mini"><b style="color:var(--flag)">22</b> disagree</span><span class="mini"><b>8</b> all reject</span><span class="mini"><b>2</b> all accept</span><span class="mini">32 cases</span></div></div>
+  <div class="tablecard"><div class="scroll"><table>
+    <thead><tr class="head"><th>Malformed case</th>
+      <th class="v">atmoq</th><th class="v">indigo</th><th class="v">rsky</th><th class="v">hydrant</th><th class="v">zlay</th><th class="consensus"></th></tr></thead>
+    <tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Frame framing</span><span class="ldesc">the two-object wire contract</span></th></tr>
+      <tr class="row reject">
+      <td class="case"><div class="case-title">header only, no payload object</div>
+        <div class="case-id">single-object</div></td>
+      <td class="v"><span class="chip reject" title="frame has 1 CBOR item, expected header + payload">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: EOF">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnexpectedEof">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">valid frame + one trailing byte</div>
+        <div class="case-id">trailing-bytes</div></td>
+      <td class="v"><span class="chip reject" title="trailing bytes after frame payload: 1 of 103">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true (1 trailing bytes ignored)">ACCEPT</span></td><td class="v"><span class="chip reject" title="body error: TrailingData">REJECT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): TrailingBytes">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row reject">
+      <td class="case"><div class="case-title">zero-length binary message</div>
+        <div class="case-id">empty-message</div></td>
+      <td class="v"><span class="chip reject" title="frame header: invalid DRISL at byte 0: truncated: expected an item">REJECT</span></td><td class="v"><span class="chip reject" title="reading header: EOF">REJECT</span></td><td class="v"><span class="chip reject" title="header error: Io(Error { kind: UnexpectedEof, message: &quot;failed to fill whole buffer&quot; })">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnexpectedEof">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">CBOR well-formedness</span><span class="ldesc">can the bytes be decoded at all?</span></th></tr>
+      <tr class="row reject">
+      <td class="case"><div class="case-title">payload truncated mid-item</div>
+        <div class="case-id">truncated-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 22: truncated string body">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: unexpected EOF">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnexpectedEof">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr>
+<tr class="row reject">
+      <td class="case"><div class="case-title">reserved additional-info 28 in payload</div>
+        <div class="case-id">reserved-ai-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 16: reserved additional-info value 28">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: invalid header: (1c)">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Mismatch { expect_major: 5, byte: 28 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Mismatch { expect_major: 5, byte: 28 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): ReservedAdditionalInfo">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr>
+<tr class="row reject">
+      <td class="case"><div class="case-title">bare break code (0xff) as payload</div>
+        <div class="case-id">bare-break-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 16: unexpected break code">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: invalid header: (ff)">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Mismatch { expect_major: 5, byte: 255 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Mismatch { expect_major: 5, byte: 255 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): IndefiniteLength">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr>
+<tr class="row reject">
+      <td class="case"><div class="case-title">random non-CBOR bytes as payload</div>
+        <div class="case-id">garbage-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 16: reserved additional-info value 30">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: invalid header: (de)">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Mismatch { expect_major: 5, byte: 222 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Mismatch { expect_major: 5, byte: 222 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): ReservedAdditionalInfo">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">DRISL determinism</span><span class="ldesc">valid CBOR, non-canonical encoding</span></th></tr>
+      <tr class="row split">
+      <td class="case"><div class="case-title">payload map keys out of DRISL order</div>
+        <div class="case-id">unordered-keys-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 25: map keys are not in bytewise lexicographic order">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsortedMapKeys">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">header keys out of DRISL order (op before t)</div>
+        <div class="case-id">unordered-keys-header</div></td>
+      <td class="v"><span class="chip reject" title="frame header: invalid DRISL at byte 5: map keys are not in bytewise lexicographic order">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsortedMapKeys">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">duplicate map key in payload</div>
+        <div class="case-id">duplicate-key-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 23: duplicate map key">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=999 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip reject" title="body error: Msg(&quot;duplicate field `seq`&quot;)">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Msg(&quot;duplicate field `seq`&quot;)">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): DuplicateMapKey">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">non-minimal integer encoding in payload</div>
+        <div class="case-id">nonminimal-int-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 61: non-minimal encoding of uint 1 (2-byte argument)">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: cbor input was not canonical (lval 25 with value &lt;= MaxUint8)">REJECT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): NonMinimalEncoding">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">non-minimal string length in payload</div>
+        <div class="case-id">nonminimal-len-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 21: non-minimal encoding of text string length 3 (1-byte argument)">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: cbor input was not canonical (lval 24 with value &lt; 24)">REJECT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Msg(&quot;error in `abc`: regex failure - invalid&quot;)">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): NonMinimalEncoding">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row reject">
+      <td class="case"><div class="case-title">indefinite-length map in payload</div>
+        <div class="case-id">indefinite-map-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 16: indefinite-length map length is not allowed">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: invalid header: (bf)">REJECT</span></td><td class="v"><span class="chip reject" title="body error: IndefiniteSize">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: IndefiniteSize">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): IndefiniteLength">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">indefinite-length text string in payload</div>
+        <div class="case-id">indefinite-str-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 21: indefinite-length text string length is not allowed">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: invalid header: (7f)">REJECT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Msg(&quot;error in `did:x`: regex failure - invalid&quot;)">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): IndefiniteLength">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Floats & simple values</span><span class="ldesc">float width, NaN, undefined</span></th></tr>
+      <tr class="row split">
+      <td class="case"><div class="case-title">float16 value in a (forward-compat) field</div>
+        <div class="case-id">float16-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: half-precision float is not allowed (floats must be 64-bit)">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedFloat">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">float32 value in a field</div>
+        <div class="case-id">float32-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: single-precision float is not allowed (floats must be 64-bit)">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedFloat">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">float64 value in a field (CONTROL: valid DRISL)</div>
+        <div class="case-id">float64-ok-payload <span class="tag control">control &middot; must accept</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#account&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedFloat">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">float64 NaN in a field</div>
+        <div class="case-id">nan-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: NaN is not allowed">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedFloat">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">float64 +Infinity in a field</div>
+        <div class="case-id">infinity-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: infinity is not allowed">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedFloat">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">CBOR undefined (0xf7) as a field value</div>
+        <div class="case-id">undefined-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: undefined is not allowed">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedSimpleValue">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">disallowed simple value simple(19) (0xf3)</div>
+        <div class="case-id">simple-value-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: simple value 19 is not allowed (only false/true/null)">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip reject" title="body error: Unsupported { byte: 243 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Unsupported { byte: 243 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedSimpleValue">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Tags & keys</span><span class="ldesc">tag 42 only, text keys, UTF-8</span></th></tr>
+      <tr class="row split">
+      <td class="case"><div class="case-title">CBOR tag 0 (datetime) in a field</div>
+        <div class="case-id">tag-0-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: tag 0 is not allowed (only tag 42/CID)">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedTag">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">CBOR tag 2 (bignum) in a field</div>
+        <div class="case-id">tag-2-bignum-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 19: tag 2 is not allowed (only tag 42/CID)">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): UnsupportedTag">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row accept">
+      <td class="case"><div class="case-title">CBOR tag 42 CID in a field (CONTROL: valid DRISL)</div>
+        <div class="case-id">tag-42-ok-payload <span class="tag control">control &middot; must accept</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#account&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="decoded ok, type=#account">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">tag 42 whose byte string lacks the 0x00 prefix</div>
+        <div class="case-id">tag-42-no-prefix-payload <span class="tag dag" title="Defect carried in an unknown field; struct decoders skip it without inspecting its encoding.">&dagger;&nbsp;in unknown field</span></div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 22: tag 42 CID must start with the 0x00 prefix">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: invalid cid: invalid cid: expected 1 as the cid version number, got: 113">REJECT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): InvalidCid">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row reject">
+      <td class="case"><div class="case-title">integer map key in payload</div>
+        <div class="case-id">int-map-key-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 17: map key is not a text string">REJECT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: got tag 0 while reading string value (l = 1)">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Eof">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): InvalidMapKey">REJECT</span></td>
+      <td class="consensus"><span class="dot reject" title="reject"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">invalid UTF-8 in the did text string</div>
+        <div class="case-id">invalid-utf8-payload</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 22: text string is not valid UTF-8">REJECT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=?( active=true">ACCEPT</span></td><td class="v"><span class="chip reject" title="body error: InvalidUtf8(Utf8Error { valid_up_to: 0, error_len: Some(1) })">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: InvalidUtf8(Utf8Error { valid_up_to: 0, error_len: Some(1) })">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped, connection kept): InvalidUtf8">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">at-sync semantics</span><span class="ldesc">valid encoding, event shape</span></th></tr>
+      <tr class="row split">
+      <td class="case"><div class="case-title">unknown message type #futurething</div>
+        <div class="case-id">unknown-type <span class="tag fwd">forward-compat</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#futurething&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="unhandled msg_type &quot;#futurething&quot;: body skipped, connection kept (78 trailing bytes ignored)">ACCEPT</span></td><td class="v"><span class="chip reject" title="unknown type: #futurething">REJECT</span></td><td class="v"><span class="chip accept" title="unknown type &quot;#futurething&quot;: frame skipped, connection kept (forward-compatible)">ACCEPT</span></td><td class="v"><span class="chip accept" title="unknown type #futurething: frame skipped + cursor advanced, connection kept (not rebroadcast)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row accept">
+      <td class="case"><div class="case-title">known type with an unknown extra field</div>
+        <div class="case-id">unknown-field <span class="tag fwd">forward-compat</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#account&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="#account seq=100 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="parsed as Account">ACCEPT</span></td><td class="v"><span class="chip accept" title="decoded ok, type=#account">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">#account payload missing required seq</div>
+        <div class="case-id">missing-seq</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#account&quot;) seq=None">ACCEPT</span></td><td class="v"><span class="chip accept" title="#account seq=0 did=did:plc:conformance000000000000000 active=true">ACCEPT</span></td><td class="v"><span class="chip reject" title="body error: Msg(&quot;missing field `seq`&quot;)">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: Msg(&quot;missing field `seq`&quot;)">REJECT</span></td><td class="v"><span class="chip accept" title="decoded ok, type=#account">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">seq encoded as a text string</div>
+        <div class="case-id">wrong-type-seq</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#account&quot;) seq=None">ACCEPT</span></td><td class="v"><span class="chip reject" title="reading repoAccount event: wrong type for int64 field: 3">REJECT</span></td><td class="v"><span class="chip reject" title="body error: Mismatch { expect_major: 0, byte: 98 }">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): cbor decode error: TypeMismatch { name: &quot;i64&quot;, byte: 98 }">REJECT</span></td><td class="v"><span class="chip accept" title="decoded ok, type=#account">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">op:1 header with no t</div>
+        <div class="case-id">op-1-no-t</div></td>
+      <td class="v"><span class="chip reject" title="op=1 frame missing 't'">REJECT</span></td><td class="v"><span class="chip accept" title="unhandled msg_type &quot;&quot;: body skipped, connection kept (86 trailing bytes ignored)">ACCEPT</span></td><td class="v"><span class="chip reject" title="unknown type: ">REJECT</span></td><td class="v"><span class="chip reject" title="frame decode error (connection drop): missing type in header">REJECT</span></td><td class="v"><span class="chip reject" title="missing type in header (frame dropped, connection kept)">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+  </table></div></div>
+  <div class="legend">
+    <span class="li"><span class="chip reject">REJECT</span> event/frame dropped</span>
+    <span class="li"><span class="chip accept">ACCEPT</span> passed through</span>
+    <span class="li"><span class="dot split"></span> relays disagree</span>
+    <span class="li">&dagger; defect sits in an unknown field the struct decoders skip</span>
+    <span class="li">hover any verdict for the exact reason</span>
+  </div>
+
+  <div class="sec-head"><div><h2 id="-commit">Malformed #commit frames</h2><p class="sec-sub">Real signed commits carrying a CAR of blocks — the validation that matters happens below frame-decode.</p></div><div class="ministat"><span class="mini"><b style="color:var(--flag)">6</b> disagree</span><span class="mini"><b>0</b> all reject</span><span class="mini"><b>4</b> all accept</span><span class="mini">10 cases</span></div></div>
+  <div class="tablecard"><div class="scroll"><table>
+    <thead><tr class="head"><th>Malformed case</th>
+      <th class="v">atmoq</th><th class="v">indigo</th><th class="v">rsky</th><th class="v">hydrant</th><th class="v">zlay</th><th class="consensus"></th></tr></thead>
+    <tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Valid baseline</span><span class="ldesc">correct CAR, CIDs, signature</span></th></tr>
+      <tr class="row accept">
+      <td class="case"><div class="case-title">valid signed #commit (CONTROL)</div>
+        <div class="case-id">valid <span class="tag control">control &middot; must accept</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="passed (advisory repo.VerifyCommitMessage passed)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST skipped?no prev state; records not decoded)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Envelope encoding</span><span class="ldesc">DRISL on the outer payload map</span></th></tr>
+      <tr class="row split">
+      <td class="case"><div class="case-title">#commit envelope map keys out of DRISL order</div>
+        <div class="case-id">envelope-unordered</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 47: map keys are not in bytewise lexicographic order">REJECT</span></td><td class="v"><span class="chip accept" title="accept: cbor-gen does not enforce canonical map ordering on the envelope">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (serde_ipld_dagcbor tolerates out-of-order keys; sig over inner commit still verifies)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped): UnsortedMapKeys">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">#commit envelope carries a float16 field</div>
+        <div class="case-id">envelope-float16</div></td>
+      <td class="v"><span class="chip reject" title="frame payload: invalid DRISL at byte 222: half-precision float is not allowed (floats must be 64-bit)">REJECT</span></td><td class="v"><span class="chip accept" title="accept: cbor-gen does not reject a float16 in the payload envelope">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (float16 in unknown envelope field tolerated)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip reject" title="frame decode error (frame dropped): UnsupportedFloat">REJECT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Record contents</span><span class="ldesc">$type & record shape — inside the CAR</span></th></tr>
+      <tr class="row accept">
+      <td class="case"><div class="case-title">create op whose record has no $type</div>
+        <div class="case-id">record-no-type <span class="tag rep">reported case</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept: record content never decoded; CID/MST placement correct, $type never inspected">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (records not decoded; $type in record content never inspected)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr>
+<tr class="row accept">
+      <td class="case"><div class="case-title">create op whose record has an unknown $type / NSID</div>
+        <div class="case-id">record-unknown-type <span class="tag fwd">forward-compat</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept: app-agnostic, record content never decoded">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (records not decoded)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr>
+<tr class="row accept">
+      <td class="case"><div class="case-title">create op whose record is a CBOR array, not a map</div>
+        <div class="case-id">record-not-map</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept: record bytes never parsed (list-vs-map not caught); CID hashes correctly">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (record bytes never decoded; array-vs-map not caught)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Repo & crypto integrity</span><span class="ldesc">CAR CIDs, blocks, signature, flags</span></th></tr>
+      <tr class="row split">
+      <td class="case"><div class="case-title">#commit with tooBig=true</div>
+        <div class="case-id">too-big</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip reject" title="deprecated tooBig commit flag set (hard, strict mode default)">REJECT</span></td><td class="v"><span class="chip reject" title="envelope validate(): tooBig flag set (hard, not lenient-gated)">REJECT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">CAR block whose bytes no longer hash to its CID</div>
+        <div class="case-id">cid-mismatch</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip reject" title="go-car CarReader recompute: mismatch in content integrity (hard)">REJECT</span></td><td class="v"><span class="chip reject" title="CAR-CID integrity: BlockDigestMismatch (rs-car-sync validate_block_hash)">REJECT</span></td><td class="v"><span class="chip reject" title="relay drops event: malformed CAR: record is not valid CBOR: InvalidUtf8(Utf8Error { valid_up_to: 23, error_len: Some(1) })">REJECT</span></td><td class="v"><span class="chip accept" title="forwarded UNVALIDATED (fail-open): signature/structure check failed or key uncached; key re-resolved in background">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">create op references a record CID absent from the CAR</div>
+        <div class="case-id">missing-block</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept: advisory repo.VerifyCommitMessage errors 'could not find &lt;cid&gt;' but is logged-not-enforced; single INIT commit early-returns before it">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (op-referenced CID presence not checked; record-presence is a TODO, MST skipped)">ACCEPT</span></td><td class="v"><span class="chip reject" title="relay drops event: malformed CAR: block for op CID bafyreidh3o2qxas42pkkbvoqlrxhadt6w5fedyswlxmnzrqc5kvioiw4ze missing from CAR">REJECT</span></td><td class="v"><span class="chip accept" title="validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">#commit signed by the wrong key</div>
+        <div class="case-id">bad-signature</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip reject" title="commit signature verification: cryptographic signature invalid (hard)">REJECT</span></td><td class="v"><span class="chip accept" title="accept (LENIENT default: sig fail published as warning; strict mode = reject sig_fail)">ACCEPT</span></td><td class="v"><span class="chip reject" title="signature verification failed -&gt; event dropped (prod retries once after DID-doc key refresh)">REJECT</span></td><td class="v"><span class="chip accept" title="forwarded UNVALIDATED (fail-open): signature/structure check failed or key uncached; key re-resolved in background">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+  </table></div></div>
+  <div class="legend">
+    <span class="li">verdict = the <b style="color:var(--ink)">relay-level</b> decision (drop or publish), mirroring enforce-vs-advisory gating &mdash; not just whether a verify function errored</span>
+  </div>
+
+  <div class="sec-head"><div><h2 id="-sync">sync-1.1 compliance</h2><p class="sec-sub">The at-synchronization rules: the #sync event, and the prevData / rev-ordering checks that only fire on a second commit once the relay holds prior repo state.</p></div><div class="ministat"><span class="mini"><b style="color:var(--flag)">5</b> disagree</span><span class="mini"><b>0</b> all reject</span><span class="mini"><b>2</b> all accept</span><span class="mini">7 cases</span></div></div>
+  <div class="tablecard"><div class="scroll"><table>
+    <thead><tr class="head"><th>Malformed case</th>
+      <th class="v">atmoq</th><th class="v">indigo</th><th class="v">rsky</th><th class="v">hydrant</th><th class="v">zlay</th><th class="consensus"></th></tr></thead>
+    <tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">#sync event</span><span class="ldesc">sync-1.1's compact repo-state message</span></th></tr>
+      <tr class="row accept">
+      <td class="case"><div class="case-title">valid #sync event (CONTROL)</div>
+        <div class="case-id">sync-event-valid <span class="tag control">control &middot; must accept</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#sync&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="#sync commit block structure + signature verified">ACCEPT</span></td><td class="v"><span class="chip accept" title="lenient(default)=accept (sig ok); strict=accept">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (#sync commit block + signature verified)">ACCEPT</span></td><td class="v"><span class="chip accept" title="validated: #sync signature verified">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">#sync event signed by the wrong key</div>
+        <div class="case-id">sync-event-bad-sig</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#sync&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip reject" title="#sync commit signature verification: cryptographic signature invalid (hard)">REJECT</span></td><td class="v"><span class="chip accept" title="lenient(default)=accept ? sig FAIL published with warning; strict=reject (sig_fail)">ACCEPT</span></td><td class="v"><span class="chip reject" title="#sync signature verification failed -&gt; event dropped">REJECT</span></td><td class="v"><span class="chip accept" title="forwarded UNVALIDATED (fail-open): #sync signature failed -&gt; key evicted + re-resolve; frame still published">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+<tbody class="layer">
+      <tr class="layer-head"><th colspan="7"><span class="lname">Stateful commit checks</span><span class="ldesc">prevData, rev order, rebase — need prior state</span></th></tr>
+      <tr class="row accept">
+      <td class="case"><div class="case-title">valid second commit with correct prevData (CONTROL)</div>
+        <div class="case-id">commit2-valid <span class="tag control">control &middot; must accept</span></div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="all checks passed">ACCEPT</span></td><td class="v"><span class="chip accept" title="lenient=accept; strict=accept; verify_commit_event=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="prevData/since mismatch (if any) is ADVISORY (chain_breaks stat), not a drop; validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot accept" title="accept"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">second commit omits prevData</div>
+        <div class="case-id">commit2-missing-prevdata</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip reject" title="missing prevData while prior state exists ? HARD (verify.go:137)">REJECT</span></td><td class="v"><span class="chip accept" title="lenient(default)=accept ? verify_commit_event=false (hard: missing prevData) but published with mst_fail warning; strict=reject">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok); chain_break is ADVISORY (event emitted): since_mismatch=false prev_data_mismatch=true">ACCEPT</span></td><td class="v"><span class="chip accept" title="prevData/since mismatch (if any) is ADVISORY (chain_breaks stat), not a drop; validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">second commit with a mismatched prevData CID</div>
+        <div class="case-id">commit2-wrong-prevdata</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="ADVISORY: prevData CID mismatch + MST inversion 'inverted tree root didn't match prevData' only logger.Warn (verify.go:142,153); event still emitted">ACCEPT</span></td><td class="v"><span class="chip accept" title="accept in BOTH modes ? present prevData clears the presence check; inverted-root mismatch is ADVISORY (utils.rs:148-153 returns true)">ACCEPT</span></td><td class="v"><span class="chip reject" title="MST inversion failed -&gt; event dropped (prevData correctness ENFORCED): MST inversion root mismatch: expected bafyreicocnm6oh5g6xgmonxwnivexueiywqzrvavbakzicpsq7titvwjfu, got bafyreigz4mkstjkvpij3lbdu7nsqlvuz2sffearuwouougb5pkin6ulze4">REJECT</span></td><td class="v"><span class="chip accept" title="prevData/since mismatch (if any) is ADVISORY (chain_breaks stat), not a drop; validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">second commit whose rev is not greater than the last seen</div>
+        <div class="case-id">commit2-rev-rollback</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip reject" title="stale rev fast-path drop (ingest.go:116): evt.Rev &lt;= prevRepo.Rev; VerifyCommitMessageStrict would also ErrRevSequence">REJECT</span></td><td class="v"><span class="chip accept" title="lenient(default)=accept ? verify_commit_event=false (rev not newer) but published with mst_fail warning; strict=reject">ACCEPT</span></td><td class="v"><span class="chip skip" title="stale rev (rev &lt;= prior rev): dropped as replay">SKIP</span></td><td class="v"><span class="chip skip" title="stale rev 3mqznmxirj22p &lt;= prior 3mqznmxirj22p: dropped as replay (frame_worker.zig:200)">SKIP</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr>
+<tr class="row split">
+      <td class="case"><div class="case-title">#commit with the deprecated rebase flag set</div>
+        <div class="case-id">commit-rebase-flag</div></td>
+      <td class="v"><span class="chip accept" title="t=Some(&quot;#commit&quot;) seq=Some(100)">ACCEPT</span></td><td class="v"><span class="chip accept" title="first-commit early-return (verify.go:132): rebase check at verify.go:158 not reached (no prior state / prevData=null)">ACCEPT</span></td><td class="v"><span class="chip reject" title="envelope validate() hard-reject in BOTH modes: rebase flag set (not lenient-gated)">REJECT</span></td><td class="v"><span class="chip accept" title="accept (sig ok; MST inversion ok; verify_cids OFF by default)">ACCEPT</span></td><td class="v"><span class="chip accept" title="prevData/since mismatch (if any) is ADVISORY (chain_breaks stat), not a drop; validated: signature verified (verify_mst=off, verify_commit_diff=off by default)">ACCEPT</span></td>
+      <td class="consensus"><span class="dot split" title="split"></span></td></tr></tbody>
+  </table></div></div>
+  <div class="legend">
+    <span class="li">stateful: a valid <b style="color:var(--ink)">setup</b> commit runs first, then the frame under test &mdash; so <span class="mono">prevData</span> / rev checks actually fire</span>
+    <span class="li">rsky verdicts are its <b style="color:var(--ink)">default lenient</b> mode; strict mode is stricter (see tooltip)</span>
+    <span class="li">zlay is <b style="color:var(--ink)">fail-open</b>: an ACCEPT on a bad sig / prevData means forwarded <em>unvalidated</em>, not verified</span>
+  </div>
+
+  <div class="h2bar">What to look at</div>
+  <div class="findings">
+    <div class="finding"><h3>Fail-open vs fail-closed: the same bad commit, opposite fates</h3>
+      <p>Give five relays a commit signed by the <em>wrong key</em>: <span class="mono">hydrant</span> and indigo <b>drop</b> it; <span class="mono">zlay</span> <b>forwards it unvalidated</b> (and re-resolves the key in the background), rsky publishes it with a warning, atmoq has no crypto. zlay is fail-open by design — it never drops a commit on bad signature, CID, or MST. hydrant is its mirror image. The spec never says which is conformant.</p></div>
+    <div class="finding"><h3>sync-1.1's <span class="mono">prevData</span> guarantee is enforced by exactly one relay</h3>
+      <p>A commit whose <span class="mono">prevData</span> is <em>present but wrong</em> (the MST inversion fails) is dropped only by <span class="mono">hydrant</span> — it always holds the signing key, so it always inverts the MST. The other four accept it. The property that lets a consumer verify an op <em>without</em> fetching the repo is honored by one relay of five. MUST, or hint?</p></div>
+    <div class="finding"><h3>Even the <span class="mono">float64</span> control isn't universal</h3>
+      <p>The float64 case is a <em>control</em> — valid DRISL, meant to be accepted everywhere. It is, by four relays. <span class="mono">zlay</span>'s <span class="mono">zat</span> DAG-CBOR decoder rejects <b>all</b> floats, float64 included — atproto records carry no floats, so it forbids them outright. Two whole-frame validators (atmoq, zlay) enforce DRISL; they still disagree on whether float64 is even legal.</p></div>
+    <div class="finding"><h3>No relay validates record <em>contents</em></h3>
+      <p>A <span class="mono">#commit</span> whose record omits <span class="mono">$type</span> — or is a list, not a map — passes all five. Only hydrant decodes record bodies at all (as generic CBOR), so it alone would reject a <em>malformed-CBOR</em> record; none require a lexicon <span class="mono">$type</span>. Record semantics are left to PDSes and AppViews.</p></div>
+    <div class="finding"><h3>The blast radius differs, not just the verdict</h3>
+      <p>A bad frame costs atmoq/rsky/zlay one event; it costs <span class="mono">indigo</span> and <span class="mono">hydrant</span> the whole connection to that PDS until reconnect — a mild DoS foothold. And rsky is still the one relay whose parser <em>errors</em> on an unknown message type (<span class="mono">#futurething</span>); the other four tolerate it. Specify the <em>consequence</em>, not only reject-or-not.</p></div>
+    <div class="finding"><h3>Strictness is a per-relay default, not a spec</h3>
+      <p>Two relays validate the whole frame's encoding (atmoq, zlay); three decode into structs and never re-check it. rsky's default publishes bad sigs and rev rollbacks; hydrant enforces them; zlay forwards them. indigo drops deprecated <span class="mono">tooBig</span>/<span class="mono">rebase</span> flags that others ignore. Five codebases, five postures — a spec's MUST list should say which is conformant, and match what ships <em>enabled by default</em>.</p></div>
+  </div>
+
+  <div class="foot">
+    <div><b>Method.</b> Each verdict runs the relay's real code: atmoq <span class="mono">Frame::parse</span>; indigo cbor-gen decode + <span class="mono">VerifyRepoCommit</span> gating; rsky <span class="mono">SubscribeReposEvent</span> parse + commit validation; hydrant <span class="mono">decode_frame</span> + <span class="mono">validate_commit</span>/<span class="mono">validate_sync</span> at its default posture; zlay <span class="mono">zat.cbor</span> decode + <span class="mono">Validator.validateCommit</span>/<span class="mono">validateSync</span> with the signing key pre-seeded (fail-open forward on any failure). Commits are genuine signed repos built with @atproto/repo. Corpus &amp; harness: <b>tests/relay-conformance/</b> in the atmoq repo.</div>
+    <div style="margin-top:8px"><b>Fidelity notes.</b> atmoq does no repo/crypto validation yet (its M2), so it accepts any commit with a valid envelope. The reject-<em>consequence</em> row (connection vs event) is from ingest source, not a live capture; an end-to-end injection harness would measure it directly.</div>
+  </div>
+</div>
