@@ -22,15 +22,45 @@ futures-util.workspace = true
 # in-tree copy locally, and the version is what the published crate resolves.
 moq-native = { package = "atmoq-moq-native", version = "0.17.0", path = "../../vendor/moq-native" }
 moq-native-07.workspace = true
-moq-net = { package = "atmoq-moq-net", version = "0.1.11", path = "../../vendor/moq-net" }
+moq-net = { package = "atmoq-moq-net", version = "0.1.12", path = "../../vendor/moq-net" }
 moq-transport-07.workspace = true
+opentelemetry = "0.32"
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 rustls-pemfile = "2"
 serde.workspace = true
 serde_json.workspace = true
+# Heap profiling, behind the non-default `profiling` feature (see [features]).
+# Optional so `cargo install atmoq` keeps the system allocator and doesn't
+# build jemalloc from source; the production image turns it on.
+tikv-jemalloc-ctl = { version = "0.7", features = [
+    "profiling",
+    "stats",
+    "use_std",
+], optional = true }
+tikv-jemallocator = { version = "0.7", features = [
+    "profiling",
+    "stats",
+], optional = true }
 tokio.workspace = true
 tokio-rustls = "0.26"
 tokio-tungstenite.workspace = true
 tracing.workspace = true
+tracing-logfmt = "0.3.7"
+tracing-opentelemetry = "0.33"
 tracing-subscriber.workspace = true
 url.workspace = true
+
+[features]
+default = []
+# Swaps in jemalloc as the global allocator with heap profiling compiled in,
+# and enables the admin listener's /debug/heap endpoint. Off by default: it
+# builds jemalloc from source and changes the allocator for everyone who runs
+# `cargo install atmoq`, which is not a decision to make on their behalf. The
+# production container image enables it.
+#
+# Profiling must also be armed at runtime, since jemalloc gates it on an env
+# var read at startup:
+#   MALLOC_CONF=prof:true,prof_active:true,lg_prof_sample:19
+profiling = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]

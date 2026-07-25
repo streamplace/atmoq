@@ -11,7 +11,11 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor ./vendor
-RUN cargo build --release --locked --bin atmoq \
+# --features profiling swaps in jemalloc with heap profiling compiled in and
+# armed (see crates/atmoq/src/heap.rs), which is what makes /debug/heap on the
+# admin listener return anything. Off by default for `cargo install atmoq`,
+# on here: diagnosing a production memory leak without it means a heap walk.
+RUN cargo build --release --locked --bin atmoq --features profiling \
     && cp target/release/atmoq /usr/local/bin/atmoq
 
 FROM debian:bookworm-slim
