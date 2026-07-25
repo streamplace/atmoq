@@ -7,7 +7,8 @@
 //! it consumes a WebSocket firehose and republishes it over MoQ.
 
 use atmoq::{
-    dialect07, frame::Frame, ingest, json::cbor_to_json, router::DidRouter, store::GroupStore,
+    dialect07, frame::Frame, ingest, json::cbor_to_json, metrics::Metrics, router::DidRouter,
+    store::GroupStore,
 };
 use base64::Engine;
 use bytes::Bytes;
@@ -23,17 +24,33 @@ use tokio::sync::mpsc;
 /// held only for the in-memory index lookup — the actual disk read happens
 /// after release, so concurrent deep resumes never serialize the ingest
 /// pump's appends behind their file I/O.
-struct StoreSource(Arc<Mutex<GroupStore>>);
+struct StoreSource(Arc<Mutex<GroupStore>>, Arc<Metrics>);
 
 impl moq_net::GroupSource for StoreSource {
     fn group(&self, sequence: u64) -> Option<Vec<Bytes>> {
-        let loc = self.0.lock().unwrap().locate(sequence)?;
+        let Some(loc) = self.0.lock().unwrap().locate(sequence) else {
+            // Asked for a group the store never had or has already GC'd. This
+            // is the deep-replay floor being hit, which is exactly when a
+            // resuming subscriber silently loses history — count it.
+            self.1
+                .backfill_groups_missing_total
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
         match atmoq::store::read_group_at(&loc, sequence) {
-            Ok(frames) => Some(frames),
+            Ok(frames) => {
+                self.1
+                    .backfill_groups_served_total
+                    .fetch_add(1, Ordering::Relaxed);
+                Some(frames)
+            }
             Err(err) => {
                 // Racing GC (segment deleted between locate and read) lands
                 // here too; the group is simply gone — a gap the consumer
                 // repairs via PDS re-sync.
+                self.1
+                    .backfill_groups_missing_total
+                    .fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(?err, sequence, "group source read failed");
                 None
             }
@@ -177,6 +194,11 @@ struct RelayArgs {
     /// deep-replay window rather than filling the disk.
     #[arg(long, default_value_t = 0)]
     max_store_bytes: u64,
+    /// Bind for the admin listener serving /metrics and /healthz (empty string
+    /// to disable). Loopback by default: it is unauthenticated plain HTTP, and
+    /// relay internals are operational detail, not public information.
+    #[arg(long, default_value = "127.0.0.1:9464")]
+    metrics_bind: String,
     /// MoQ wire protocol (use ietf-07 for Cloudflare's relay)
     #[arg(long, value_enum, default_value_t = Dialect::Lite)]
     dialect: Dialect,
@@ -247,6 +269,12 @@ struct ServeArgs {
     /// deep-replay window rather than filling the disk.
     #[arg(long, default_value_t = 0)]
     max_store_bytes: u64,
+    /// Bind for the admin listener serving /metrics and /healthz (empty string
+    /// to disable). Loopback by default: it is unauthenticated plain HTTP, and
+    /// relay internals are operational detail, not public information. This is
+    /// deliberately separate from --web-tls-bind, which faces the internet.
+    #[arg(long, default_value = "127.0.0.1:9464")]
+    metrics_bind: String,
     #[command(flatten)]
     server: moq_native::ServerConfig,
 }
@@ -261,6 +289,11 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
+        // tracing-subscriber colorizes unconditionally — it does not check for a
+        // tty — so without this every line carries ANSI escapes into the
+        // container log, and from there into Loki, where they corrupt field
+        // extraction and every grep needs a sed to undo them.
+        .with_ansi(false)
         .init();
     match Cli::parse().cmd {
         Cmd::Firehose(args) => firehose(args).await,
@@ -335,7 +368,10 @@ async fn firehose(args: FirehoseArgs) -> anyhow::Result<()> {
         tokio::spawn(async move {
             let (ftx, mut frx) = mpsc::channel(256);
             let ingest = tokio::spawn(async move {
-                if let Err(err) = ingest::subscribe_repos(&upstream, cursor, ftx).await {
+                // `firehose` is a client CLI with no admin listener, so its
+                // counters go nowhere; the reject path still logs.
+                let metrics = Metrics::default();
+                if let Err(err) = ingest::subscribe_repos(&upstream, cursor, ftx, &metrics).await {
                     tracing::error!(?err, "upstream error");
                 }
             });
@@ -669,6 +705,7 @@ fn build_lite_publisher(
     group_seq_file: Option<std::path::PathBuf>,
     group_store_dir: &std::path::Path,
     window_secs: u64,
+    metrics: Arc<Metrics>,
 ) -> anyhow::Result<FramePublisher> {
     // The disk store is always on for Lite serve/relay (mirrors indigo's
     // always-persisting relay); the directory has a default. Log the resolved
@@ -691,7 +728,7 @@ fn build_lite_publisher(
         reload_window(&mut track, &s.lock().unwrap(), window_secs)?;
         // Tier B: let the publisher serve groups older than the RAM cache
         // straight from disk for resuming subscribers.
-        track.set_group_source(Arc::new(StoreSource(s.clone())))?;
+        track.set_group_source(Arc::new(StoreSource(s.clone(), metrics.clone())))?;
     }
     let store_max = store.as_ref().and_then(|s| s.lock().unwrap().max_seq());
     // Seed = previous high-water sequence; the first group is seed + 1.
@@ -724,6 +761,7 @@ fn build_lite_publisher(
         group_seq_file,
         store,
         group_frames: Vec::new(),
+        metrics,
     })
 }
 
@@ -743,6 +781,7 @@ enum FramePublisher {
         /// Frames of the current (not-yet-finished) group, buffered so the
         /// completed group can be appended to `store` on rotation.
         group_frames: Vec<Bytes>,
+        metrics: Arc<Metrics>,
     },
     Ietf07(Box<dialect07::ResilientPublisher>),
 }
@@ -757,6 +796,7 @@ impl FramePublisher {
                 group_seq_file,
                 store,
                 group_frames,
+                metrics,
             } => {
                 let b = Bytes::from(data);
                 group.write_frame(b.clone())?;
@@ -776,20 +816,32 @@ impl FramePublisher {
                     // live fan-out still works; the missed groups are a gap
                     // consumers repair via PDS re-sync.
                     if let Some(store) = store {
-                        if let Err(err) =
-                            store
-                                .lock()
-                                .unwrap()
-                                .append(finished_seq, now_ms(), group_frames)
+                        let bytes: u64 = group_frames.iter().map(|f| f.len() as u64).sum();
+                        match store
+                            .lock()
+                            .unwrap()
+                            .append(finished_seq, now_ms(), group_frames)
                         {
-                            tracing::error!(
-                                ?err,
-                                sequence = finished_seq,
-                                "failed to persist group; replay window degraded"
-                            );
+                            Ok(()) => {
+                                metrics
+                                    .store_append_bytes_total
+                                    .fetch_add(bytes, Ordering::Relaxed);
+                            }
+                            Err(err) => {
+                                metrics
+                                    .store_append_failures_total
+                                    .fetch_add(1, Ordering::Relaxed);
+                                tracing::error!(
+                                    ?err,
+                                    sequence = finished_seq,
+                                    "failed to persist group; replay window degraded"
+                                );
+                            }
                         }
                         group_frames.clear();
                     }
+                    metrics.groups_total.fetch_add(1, Ordering::Relaxed);
+                    metrics.group_seq.store(group.sequence, Ordering::Relaxed);
                     // Persist on creation (not finish): a consumer only resumes
                     // from a group it actually received, and seeding from
                     // persisted+1 guarantees we never reuse a sequence for
@@ -808,20 +860,38 @@ impl FramePublisher {
     /// 0` disables the size bound.
     fn gc(&mut self, window_secs: u64, max_bytes: u64) {
         if let FramePublisher::Lite {
-            store: Some(store), ..
+            store: Some(store),
+            metrics,
+            ..
         } = self
         {
-            if window_secs == 0 && max_bytes == 0 {
-                return;
-            }
             let cutoff = if window_secs > 0 {
                 now_ms().saturating_sub(window_secs * 1000)
             } else {
                 0 // nothing expires by age
             };
-            if let Err(err) = store.lock().unwrap().gc(cutoff, max_bytes) {
-                tracing::warn!(?err, "group store gc failed");
+            let mut store = store.lock().unwrap();
+            // GC may be fully disabled, but the size gauges still need
+            // refreshing — an unbounded store filling the disk is exactly the
+            // configuration where you most want to see it growing.
+            if window_secs > 0 || max_bytes > 0 {
+                match store.gc(cutoff, max_bytes) {
+                    Ok(removed) => {
+                        metrics
+                            .store_gc_segments_removed_total
+                            .fetch_add(removed as u64, Ordering::Relaxed);
+                    }
+                    Err(err) => tracing::warn!(?err, "group store gc failed"),
+                }
             }
+            // Gauges refreshed on the GC tick (every 30s) rather than per
+            // append: they move slowly and the pump's hot path shouldn't pay.
+            metrics
+                .store_groups_indexed
+                .store(store.indexed_groups(), Ordering::Relaxed);
+            metrics
+                .store_bytes
+                .store(store.total_bytes(), Ordering::Relaxed);
         }
     }
 
@@ -864,6 +934,8 @@ impl FramePublisher {
 }
 
 async fn relay(args: RelayArgs) -> anyhow::Result<()> {
+    let metrics = Arc::new(Metrics::default());
+    spawn_admin(&args.metrics_bind, metrics.clone());
     // _keepalive holds whatever must not drop for publishing to continue
     // (lite: the reconnecting session + origin producer).
     let (publisher, _keepalive, did_router): (
@@ -888,6 +960,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 args.group_size,
                 args.replay_window_secs,
                 args.max_did_tracks,
+                metrics.clone(),
             );
             // auto-reconnecting session: publishing resumes after drops
             let session = client
@@ -898,6 +971,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
                 args.group_seq_file.clone(),
                 &args.group_store_dir,
                 args.replay_window_secs,
+                metrics.clone(),
             )?;
             (
                 publisher,
@@ -919,7 +993,7 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     tracing::info!(url = %args.moq_host, broadcast = %args.broadcast, "publishing to MoQ relay");
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
-    let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
+    let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone(), metrics.clone());
     // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
     let retention = Retention {
         window_secs: args.backfill_window_secs,
@@ -928,11 +1002,14 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
     pump(
         rx,
         publisher,
-        args.group_size,
-        retention,
-        args.cursor_file,
-        last_seq,
-        did_router,
+        PumpConfig {
+            group_size: args.group_size,
+            retention,
+            cursor_file: args.cursor_file,
+            last_seq,
+            did_router,
+            metrics,
+        },
     )
     .await
 }
@@ -942,6 +1019,8 @@ async fn relay(args: RelayArgs) -> anyhow::Result<()> {
 /// (`with_publish` only — no session can publish into us, so there is no
 /// namespace to squat).
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let metrics = Arc::new(Metrics::default());
+    spawn_admin(&args.metrics_bind, metrics.clone());
     let origin = moq_net::Origin::random().produce();
     let mut broadcast = moq_net::Broadcast::new().produce();
     let mut track = broadcast.create_track(moq_net::Track {
@@ -955,6 +1034,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         args.group_seq_file.clone(),
         &args.group_store_dir,
         args.replay_window_secs,
+        metrics.clone(),
     )?;
     // Selective sync: serve per-DID tracks on demand to subscribers that want
     // only a subset of accounts. `broadcast.dynamic()` keeps the broadcast alive.
@@ -963,6 +1043,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         args.group_size,
         args.replay_window_secs,
         args.max_did_tracks,
+        metrics.clone(),
     );
 
     // human-facing web frontend: :80 redirect + TLS landing page
@@ -991,18 +1072,42 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let mut server = args.server.init()?;
     tracing::info!(broadcast = %args.broadcast, "serving MoQ subscribers");
+    let accept_metrics = metrics.clone();
     tokio::spawn(async move {
         while let Some(request) = server.accept().await {
             let consume = origin.consume();
+            let metrics = accept_metrics.clone();
             tokio::spawn(async move {
                 match request.with_publish(consume).ok().await {
                     Ok(session) => {
-                        tracing::info!("subscriber connected");
-                        if let Err(err) = session.closed().await {
-                            tracing::debug!(?err, "subscriber session ended");
-                        }
+                        metrics
+                            .subscribers_connected_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::info!(live = metrics.subscribers_live(), "subscriber connected");
+                        let err = session.closed().await.err();
+                        // Counted before logging so the gauge is correct even
+                        // if the log is filtered out. Every QUIC subscriber is
+                        // multiplexed onto one UDP socket, so this pair is the
+                        // only place a live session count can come from —
+                        // nothing outside the process can recover it.
+                        metrics
+                            .subscribers_disconnected_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        // At info, not debug: a session that connects and never
+                        // leaves is exactly the shape of a stalled consumer, and
+                        // an invisible disconnect makes that undiagnosable.
+                        tracing::info!(
+                            ?err,
+                            live = metrics.subscribers_live(),
+                            "subscriber session ended"
+                        );
                     }
-                    Err(err) => tracing::warn!(?err, "session rejected"),
+                    Err(err) => {
+                        metrics
+                            .subscribers_rejected_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(?err, "session rejected");
+                    }
                 }
             });
         }
@@ -1010,7 +1115,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
 
     let last_seq = load_initial_cursor(&args.cursor_file, args.cursor)?;
-    let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone());
+    let rx = spawn_ingest(args.relay_host.clone(), last_seq.clone(), metrics.clone());
     // Disk retention / deep-replay depth for Tier B (defaults to 72h, matching indigo).
     let retention = Retention {
         window_secs: args.backfill_window_secs,
@@ -1019,15 +1124,38 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let result = pump(
         rx,
         publisher,
-        args.group_size,
-        retention,
-        args.cursor_file,
-        last_seq,
-        Some(did_router),
+        PumpConfig {
+            group_size: args.group_size,
+            retention,
+            cursor_file: args.cursor_file,
+            last_seq,
+            did_router: Some(did_router),
+            metrics,
+        },
     )
     .await;
     drop(broadcast);
     result
+}
+
+/// Start the admin listener (metrics + health) unless it is disabled with an
+/// empty bind. A bad address is a warning, not a startup failure: losing
+/// observability must never take the relay itself down.
+fn spawn_admin(bind: &str, metrics: Arc<Metrics>) {
+    if bind.is_empty() {
+        tracing::info!("admin listener disabled (--metrics-bind is empty)");
+        return;
+    }
+    match bind.parse::<std::net::SocketAddr>() {
+        Ok(addr) => {
+            tokio::spawn(async move {
+                if let Err(err) = atmoq::web::serve_admin(addr, metrics).await {
+                    tracing::warn!(?err, "admin listener failed");
+                }
+            });
+        }
+        Err(err) => tracing::warn!(?err, bind, "unparseable --metrics-bind; admin listener off"),
+    }
 }
 
 type SharedSeq = std::sync::Arc<std::sync::atomic::AtomicI64>;
@@ -1066,7 +1194,11 @@ fn load_initial_cursor(
 
 /// Upstream ingest with reconnect + cursor resume (at-sync §4.3); frames at
 /// or below the last relayed seq are dropped downstream as duplicates.
-fn spawn_ingest(upstream: String, last_seq: SharedSeq) -> mpsc::Receiver<Frame> {
+fn spawn_ingest(
+    upstream: String,
+    last_seq: SharedSeq,
+    metrics: Arc<Metrics>,
+) -> mpsc::Receiver<Frame> {
     let (tx, rx) = mpsc::channel(256);
     tokio::spawn(async move {
         let mut backoff = 1u64;
@@ -1076,7 +1208,13 @@ fn spawn_ingest(upstream: String, last_seq: SharedSeq) -> mpsc::Receiver<Frame> 
                 s => Some(s),
             };
             let started = std::time::Instant::now();
-            match ingest::subscribe_repos(&upstream, cursor, tx.clone()).await {
+            // Counted per attempt, including the first, so reconnects are
+            // `upstream_connects_total - 1`. A climbing rate means a flapping
+            // upstream, which otherwise only shows up as warn-level log noise.
+            metrics
+                .upstream_connects_total
+                .fetch_add(1, Ordering::Relaxed);
+            match ingest::subscribe_repos(&upstream, cursor, tx.clone(), &metrics).await {
                 Ok(()) => tracing::warn!("upstream ended; reconnecting"),
                 Err(err) => tracing::warn!(?err, "upstream error; reconnecting"),
             }
@@ -1104,15 +1242,31 @@ struct Retention {
     max_bytes: u64,
 }
 
-async fn pump(
-    mut rx: mpsc::Receiver<Frame>,
-    mut publisher: FramePublisher,
+/// Everything the pump needs besides its input stream and output publisher.
+/// Grouped into a struct rather than passed positionally: the list had grown
+/// past the point where call sites were readable (and past clippy's limit).
+struct PumpConfig {
     group_size: usize,
     retention: Retention,
     cursor_file: Option<std::path::PathBuf>,
     last_seq: SharedSeq,
     did_router: Option<DidRouter>,
+    metrics: Arc<Metrics>,
+}
+
+async fn pump(
+    mut rx: mpsc::Receiver<Frame>,
+    mut publisher: FramePublisher,
+    cfg: PumpConfig,
 ) -> anyhow::Result<()> {
+    let PumpConfig {
+        group_size,
+        retention,
+        cursor_file,
+        last_seq,
+        did_router,
+        metrics,
+    } = cfg;
     let mut total = 0u64;
     // Consecutive frames dropped as at-or-below the cursor. A handful after a
     // reconnect is normal replay overlap; a persistent stream of them means
@@ -1152,6 +1306,9 @@ async fn pump(
                     .and_then(|v| v.as_text())
                     .map(str::to_owned)
             });
+            metrics
+                .upstream_error_frames_total
+                .fetch_add(1, Ordering::Relaxed);
             tracing::error!(
                 error = ?detail,
                 "upstream sent an error frame; not republishing \
@@ -1163,6 +1320,9 @@ async fn pump(
         if let Some(seq) = frame.seq {
             if seq <= last_seq.load(Ordering::Relaxed) {
                 dropped_below_cursor += 1;
+                metrics
+                    .frames_dropped_below_cursor_total
+                    .fetch_add(1, Ordering::Relaxed);
                 if dropped_below_cursor.is_multiple_of(1000) {
                     tracing::error!(
                         dropped = dropped_below_cursor,
@@ -1185,6 +1345,10 @@ async fn pump(
             router.route(&frame.raw);
         }
         publisher.write(frame.raw, group_size).await?;
+        // Bumps the frame counter, the upstream sequence gauge, and the
+        // liveness timestamp together, so /healthz can never disagree with
+        // /metrics about whether the firehose is flowing.
+        metrics.record_frame(frame.seq);
         total += 1;
         if total.is_multiple_of(100) {
             tracing::info!(total, t = ?frame.t, seq = ?frame.seq, "relaying");
@@ -1266,7 +1430,9 @@ mod tests {
         // Run 1: rotate once (group 0 completes, stored), leave group 1
         // in progress with one frame, shut down cleanly.
         {
-            let mut p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let mut p =
+                build_lite_publisher(test_track(), None, &dir, 60, Arc::new(Metrics::default()))
+                    .unwrap();
             let (seq, _) = lite_parts(&p);
             assert_eq!(seq, 0);
             rt.block_on(async {
@@ -1280,7 +1446,9 @@ mod tests {
         // Run 2: the clean shutdown flushed partial group 1 to the store, so
         // no replay gap; the first live group must be 2, never 1 again.
         {
-            let mut p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let mut p =
+                build_lite_publisher(test_track(), None, &dir, 60, Arc::new(Metrics::default()))
+                    .unwrap();
             let (seq, store) = lite_parts(&p);
             assert_eq!(seq, 2);
             let store = store.unwrap();
@@ -1299,7 +1467,9 @@ mod tests {
         // rotation), but the sidecar seq file still forbids reusing its
         // sequence — the first live group must be 3.
         {
-            let p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let p =
+                build_lite_publisher(test_track(), None, &dir, 60, Arc::new(Metrics::default()))
+                    .unwrap();
             let (seq, store) = lite_parts(&p);
             assert_eq!(seq, 3);
             assert!(store.unwrap().lock().unwrap().read(2).unwrap().is_none());
@@ -1309,7 +1479,9 @@ mod tests {
         // past the last completed group (the in-progress sequence is unknown).
         std::fs::remove_file(dir.join("group_seq")).unwrap();
         {
-            let p = build_lite_publisher(test_track(), None, &dir, 60).unwrap();
+            let p =
+                build_lite_publisher(test_track(), None, &dir, 60, Arc::new(Metrics::default()))
+                    .unwrap();
             let (seq, _) = lite_parts(&p);
             // Store high water is 1 (completed groups 0 and 1) → seed 2 → first 3.
             assert_eq!(seq, 3);

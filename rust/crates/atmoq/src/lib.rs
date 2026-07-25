@@ -4,6 +4,7 @@ pub mod drisl;
 pub mod frame;
 pub mod ingest;
 pub mod json;
+pub mod metrics;
 pub mod router;
 pub mod store;
 pub mod web;

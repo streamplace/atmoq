@@ -114,6 +114,101 @@ pub async fn serve_landing(
     }
 }
 
+/// How stale the last relayed frame may get before `/healthz` reports
+/// unhealthy. Mainnet sustains a few hundred frames/sec, so a full minute of
+/// silence is unambiguously a stall, not a lull — while still leaving room for
+/// an upstream reconnect (which reconnects in seconds) to ride through.
+const HEALTH_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Admin listener: `/metrics`, `/healthz`, and (with the `profiling` feature)
+/// heap profiles. Plain HTTP with no auth — bind it to a private interface or a
+/// container network, never a public address. It is deliberately a *separate*
+/// listener from the landing page: `serve` puts that one on the open internet,
+/// and subscriber counts, cursor position and store size are operational
+/// detail rather than public information.
+///
+/// Runs as its own task so a wedged pump cannot stop it answering — which is
+/// the entire point of a health endpoint, and exactly the case that made the
+/// landing page useless as a liveness signal (it answered 200 throughout an
+/// outage because it never consults the pump at all).
+pub async fn serve_admin(
+    bind: std::net::SocketAddr,
+    metrics: Arc<crate::metrics::Metrics>,
+) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .with_context(|| format!("binding admin listener on {bind}"))?;
+    tracing::info!(%bind, "admin listener (metrics, health) listening");
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            let Some((path, _host)) = read_request(&mut stream).await else {
+                return;
+            };
+            // Strip any query string before matching.
+            let path = path.split('?').next().unwrap_or("/");
+            let (status, content_type, body) = admin_route(path, &metrics);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+    }
+}
+
+/// Route one admin request to (status line, content type, body). Split out so
+/// the routing table is unit-testable without a socket.
+fn admin_route(
+    path: &str,
+    metrics: &crate::metrics::Metrics,
+) -> (&'static str, &'static str, String) {
+    match path {
+        "/metrics" => (
+            "200 OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            metrics.encode(),
+        ),
+        // Liveness means "the firehose is flowing", not "the process is up".
+        // Before the first frame we report healthy: a relay that has just
+        // started has not yet failed, and failing readiness during startup only
+        // teaches operators to ignore the endpoint.
+        "/healthz" => match metrics.frame_age_ms() {
+            Some(age) if age > HEALTH_STALE_AFTER.as_millis() as u64 => (
+                "503 Service Unavailable",
+                "text/plain; charset=utf-8",
+                format!(
+                    "unhealthy: no frame relayed for {:.1}s (threshold {}s)\n",
+                    age as f64 / 1000.0,
+                    HEALTH_STALE_AFTER.as_secs()
+                ),
+            ),
+            Some(age) => (
+                "200 OK",
+                "text/plain; charset=utf-8",
+                format!(
+                    "ok: last frame {:.1}s ago, {} subscribers\n",
+                    age as f64 / 1000.0,
+                    metrics.subscribers_live()
+                ),
+            ),
+            None => (
+                "200 OK",
+                "text/plain; charset=utf-8",
+                "ok: starting, no frames relayed yet\n".to_owned(),
+            ),
+        },
+        _ => (
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n\navailable: /metrics /healthz\n".to_owned(),
+        ),
+    }
+}
+
 /// Read one request head; return (path, host-header) on a plausible GET.
 async fn read_request<S: tokio::io::AsyncRead + Unpin>(
     stream: &mut S,
@@ -147,4 +242,60 @@ async fn read_request<S: tokio::io::AsyncRead + Unpin>(
         .find(|(k, _)| k.eq_ignore_ascii_case("host"))
         .map(|(_, v)| v.trim().to_owned());
     Some((path, host))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::Metrics;
+
+    #[test]
+    fn metrics_route_serves_exposition() {
+        let m = Metrics::default();
+        m.record_frame(Some(9));
+        let (status, ct, body) = admin_route("/metrics", &m);
+        assert_eq!(status, "200 OK");
+        assert!(ct.starts_with("text/plain; version=0.0.4"));
+        assert!(body.contains("atmoq_frames_total 1"));
+    }
+
+    #[test]
+    fn health_is_ok_before_the_first_frame() {
+        // A relay that just started has not failed; reporting 503 during
+        // startup only teaches operators to ignore the endpoint.
+        let (status, _, body) = admin_route("/healthz", &Metrics::default());
+        assert_eq!(status, "200 OK");
+        assert!(body.contains("starting"));
+    }
+
+    #[test]
+    fn health_is_ok_while_frames_flow() {
+        let m = Metrics::default();
+        m.record_frame(Some(1));
+        let (status, _, _) = admin_route("/healthz", &m);
+        assert_eq!(status, "200 OK");
+    }
+
+    #[test]
+    fn health_fails_when_frames_go_stale() {
+        use std::sync::atomic::Ordering;
+        let m = Metrics::default();
+        m.record_frame(Some(1));
+        // Backdate the last frame past the threshold.
+        let stale = m.last_frame_unix_ms.load(Ordering::Relaxed)
+            - (HEALTH_STALE_AFTER.as_millis() as u64 + 1_000);
+        m.last_frame_unix_ms.store(stale, Ordering::Relaxed);
+        let (status, _, body) = admin_route("/healthz", &m);
+        assert_eq!(status, "503 Service Unavailable");
+        assert!(body.contains("unhealthy"));
+    }
+
+    #[test]
+    fn query_strings_and_unknown_paths() {
+        let m = Metrics::default();
+        assert_eq!(admin_route("/nope", &m).0, "404 Not Found");
+        // serve_admin strips the query before routing; verify the target path
+        // matches once stripped.
+        assert_eq!(admin_route("/metrics", &m).0, "200 OK");
+    }
 }
