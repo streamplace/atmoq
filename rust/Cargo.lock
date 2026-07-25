@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "atmoq-moq-net"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bytes",
  "futures",

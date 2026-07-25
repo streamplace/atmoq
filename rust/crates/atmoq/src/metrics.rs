@@ -283,6 +283,25 @@ impl Metrics {
             ));
         }
 
+        // Groups queued for delivery but not yet written to a subscriber. Read
+        // from moq-net rather than stored here: the publisher owns the queue.
+        // A healthy subscriber keeps this near zero; unbounded growth is a
+        // stuck subscriber pinning group memory, which is invisible by every
+        // other means (QUIC multiplexes all sessions onto one UDP socket).
+        // The max is exported alongside because the interesting episode is
+        // usually over before anyone looks — a subscriber can back up and
+        // disconnect between two scrapes, leaving the live gauge at zero.
+        out.push_str(&format!(
+            "# HELP atmoq_groups_in_flight Groups queued for delivery to subscribers.\n\
+             # TYPE atmoq_groups_in_flight gauge\n\
+             atmoq_groups_in_flight {}\n\
+             # HELP atmoq_groups_in_flight_max High-water mark of groups queued for delivery.\n\
+             # TYPE atmoq_groups_in_flight_max gauge\n\
+             atmoq_groups_in_flight_max {}\n",
+            moq_net::groups_in_flight(),
+            moq_net::groups_in_flight_max(),
+        ));
+
         // Signed, so it can't ride in the table above.
         out.push_str(&format!(
             "# HELP atmoq_upstream_seq Latest upstream sequence number seen.\n\

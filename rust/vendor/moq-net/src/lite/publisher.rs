@@ -506,6 +506,13 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 			// Use the latest priority for new groups so SUBSCRIBE_UPDATE applies to them too.
 			let current_priority = *track_priority.borrow_and_update();
 			let handle = priority.insert(Priority::new(current_priority, sequence));
+			// `tasks` is unbounded, and each pending entry holds a GroupConsumer
+			// that keeps the group's frames alive past the track cache's own
+			// eviction. A subscriber that stops draining therefore pins group
+			// memory for as long as it stays connected. The guard rides along
+			// with the task so the count drops on completion *and* on
+			// cancellation. See crate::inflight.
+			let in_flight = crate::InFlightGroup::new();
 			tasks.push(
 				Self::serve_group(
 					session.clone(),
@@ -516,7 +523,7 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 					track_priority.clone(),
 					version,
 				)
-				.map(|_| ()),
+				.map(move |_| drop(in_flight)),
 			);
 		}
 	}
