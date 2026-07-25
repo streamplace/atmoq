@@ -39,6 +39,7 @@ use clap::{Parser, Subcommand};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use tracing::Instrument as _;
 
 /// Adapts the disk-backed [`GroupStore`] to moq-net's [`moq_net::GroupSource`]
 /// so the lite publisher can serve a deep (disk-served) replay window for
@@ -307,12 +308,21 @@ async fn main() -> anyhow::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("install rustls crypto provider");
-    init_logging();
-    match Cli::parse().cmd {
+    let tracer_provider = init_telemetry();
+    let result = match Cli::parse().cmd {
         Cmd::Firehose(args) => firehose(args).await,
         Cmd::Relay(args) => relay(args).await,
         Cmd::Serve(args) => serve(args).await,
+    };
+    // Flush whatever is still batched. Without this a short-lived run (or a
+    // clean shutdown) exports nothing at all, which looks exactly like a
+    // misconfigured collector.
+    if let Some(provider) = tracer_provider {
+        if let Err(err) = provider.shutdown() {
+            eprintln!("warning: OTLP shutdown failed: {err}");
+        }
     }
+    result
 }
 
 /// Install the log subscriber, choosing a format from whether stderr is a
@@ -327,22 +337,49 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// `ATMOQ_LOG_FORMAT=logfmt|text` overrides the detection, for the cases where
 /// it guesses wrong (a tty inside a container, or piping to `less -R`).
-fn init_logging() {
+///
+/// If `OTEL_EXPORTER_OTLP_ENDPOINT` is set, spans are also exported over OTLP
+/// (to Tempo or any other collector). Returns the tracer provider, which the
+/// caller must keep alive and shut down — dropping it early silently discards
+/// whatever is still batched.
+fn init_telemetry() -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
     use std::io::IsTerminal;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
     let filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let ansi = std::io::stderr().is_terminal();
     let logfmt = match std::env::var("ATMOQ_LOG_FORMAT").as_deref() {
         Ok("logfmt") => true,
         Ok("text") => false,
-        _ => !std::io::stderr().is_terminal(),
+        _ => !ansi,
     };
 
+    // Tracing export is opt-in via the standard OTel variable, so there is no
+    // atmoq-specific flag to learn and nothing to configure when it's unused.
+    let provider = match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        Ok(endpoint) if !endpoint.is_empty() => match build_tracer_provider(&endpoint) {
+            Ok(p) => Some(p),
+            Err(err) => {
+                // Deliberately not fatal, and deliberately loud. A relay that
+                // refuses to start because its telemetry collector is down is
+                // strictly worse than a relay running without traces.
+                eprintln!("warning: OTLP export disabled: {err:#}");
+                None
+            }
+        },
+        _ => None,
+    };
+    let otel = provider.as_ref().map(|p| {
+        use opentelemetry::trace::TracerProvider as _;
+        tracing_opentelemetry::layer().with_tracer(p.tracer("atmoq"))
+    });
+
+    // `Option<Layer>` is itself a Layer, so an absent OTLP layer costs nothing.
+    let registry = tracing_subscriber::registry().with(filter).with(otel);
     if logfmt {
-        tracing_subscriber::registry()
-            .with(filter)
+        registry
             .with(
                 tracing_logfmt::builder()
                     .with_target(true)
@@ -353,15 +390,38 @@ fn init_logging() {
             )
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::io::stderr)
-            // Colour only for an actual terminal. Someone who forces
-            // ATMOQ_LOG_FORMAT=text and pipes to a file wants text, not text
-            // wrapped in escape codes.
-            .with_ansi(std::io::stderr().is_terminal())
+        registry
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    // Colour only for an actual terminal. Someone who forces
+                    // ATMOQ_LOG_FORMAT=text and pipes to a file wants text,
+                    // not text wrapped in escape codes.
+                    .with_ansi(ansi),
+            )
             .init();
     }
+    provider
+}
+
+/// Build an OTLP span exporter pointed at `endpoint` (e.g. Tempo on
+/// `http://tempo:4317`).
+fn build_tracer_provider(
+    endpoint: &str,
+) -> anyhow::Result<opentelemetry_sdk::trace::SdkTracerProvider> {
+    use opentelemetry_otlp::WithExportConfig as _;
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()?;
+    Ok(opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_service_name("atmoq")
+                .build(),
+        )
+        .build())
 }
 
 /// (group sequence if from MoQ, raw frame bytes)
@@ -1139,39 +1199,53 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         while let Some(request) = server.accept().await {
             let consume = origin.consume();
             let metrics = accept_metrics.clone();
-            tokio::spawn(async move {
-                match request.with_publish(consume).ok().await {
-                    Ok(session) => {
-                        metrics
-                            .subscribers_connected_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        tracing::info!(live = metrics.subscribers_live(), "subscriber connected");
-                        let err = session.closed().await.err();
-                        // Counted before logging so the gauge is correct even
-                        // if the log is filtered out. Every QUIC subscriber is
-                        // multiplexed onto one UDP socket, so this pair is the
-                        // only place a live session count can come from —
-                        // nothing outside the process can recover it.
-                        metrics
-                            .subscribers_disconnected_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        // At info, not debug: a session that connects and never
-                        // leaves is exactly the shape of a stalled consumer, and
-                        // an invisible disconnect makes that undiagnosable.
-                        tracing::info!(
-                            ?err,
-                            live = metrics.subscribers_live(),
-                            "subscriber session ended"
-                        );
-                    }
-                    Err(err) => {
-                        metrics
-                            .subscribers_rejected_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        tracing::warn!(?err, "session rejected");
+            // One span per subscriber session, so Tempo shows session
+            // lifetimes directly. This is the right granularity for a firehose
+            // relay: sessions are rare (a handful a day) while frames are
+            // ~300/s, so a span per frame would be absurd — and session
+            // duration is the thing we actually wanted to know during the
+            // relay-fra0 incident, when four subscribers connected at boot and
+            // we could not tell whether they were still attached 20h later.
+            let span = tracing::info_span!("subscriber_session");
+            tokio::spawn(
+                async move {
+                    match request.with_publish(consume).ok().await {
+                        Ok(session) => {
+                            metrics
+                                .subscribers_connected_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::info!(
+                                live = metrics.subscribers_live(),
+                                "subscriber connected"
+                            );
+                            let err = session.closed().await.err();
+                            // Counted before logging so the gauge is correct even
+                            // if the log is filtered out. Every QUIC subscriber is
+                            // multiplexed onto one UDP socket, so this pair is the
+                            // only place a live session count can come from —
+                            // nothing outside the process can recover it.
+                            metrics
+                                .subscribers_disconnected_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            // At info, not debug: a session that connects and never
+                            // leaves is exactly the shape of a stalled consumer, and
+                            // an invisible disconnect makes that undiagnosable.
+                            tracing::info!(
+                                ?err,
+                                live = metrics.subscribers_live(),
+                                "subscriber session ended"
+                            );
+                        }
+                        Err(err) => {
+                            metrics
+                                .subscribers_rejected_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::warn!(?err, "session rejected");
+                        }
                     }
                 }
-            });
+                .instrument(span),
+            );
         }
         tracing::warn!("server accept loop ended");
     });
@@ -1276,7 +1350,14 @@ fn spawn_ingest(
             metrics
                 .upstream_connects_total
                 .fetch_add(1, Ordering::Relaxed);
-            match ingest::subscribe_repos(&upstream, cursor, tx.clone(), &metrics).await {
+            // One span per upstream connection, carrying the cursor it resumed
+            // from. Also low-volume, and it makes a flapping upstream visible
+            // in Tempo as a run of short spans rather than a wall of warnings.
+            let span = tracing::info_span!("upstream_connection", cursor = ?cursor);
+            match ingest::subscribe_repos(&upstream, cursor, tx.clone(), &metrics)
+                .instrument(span)
+                .await
+            {
                 Ok(()) => tracing::warn!("upstream ended; reconnecting"),
                 Err(err) => tracing::warn!(?err, "upstream error; reconnecting"),
             }
@@ -1302,6 +1383,40 @@ struct Retention {
     window_secs: u64,
     /// Total size budget in bytes (0 = unbounded).
     max_bytes: u64,
+}
+
+/// Resolve on SIGINT **or** SIGTERM.
+///
+/// SIGTERM is the one that matters in production: `podman stop` / `docker stop`
+/// / systemd all send it, and Ctrl-C never happens there. Waiting only on
+/// ctrl_c (SIGINT) meant every container stop killed the process outright,
+/// skipping the clean-shutdown path — so each deploy dropped the in-progress
+/// group instead of flushing it to the store, and lost the last cursor write.
+/// `FramePublisher::finish` documents that an unclean shutdown loses those
+/// frames; the point is that in a container *every* shutdown was unclean.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            // Falling back to SIGINT-only is worse but still better than
+            // refusing to run.
+            Err(err) => {
+                tracing::warn!(?err, "cannot listen for SIGTERM; SIGINT only");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Everything the pump needs besides its input stream and output publisher.
@@ -1351,8 +1466,8 @@ async fn pump(
                 publisher.gc(retention.window_secs, retention.max_bytes);
                 continue;
             }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("interrupted; finishing group");
+            _ = shutdown_signal() => {
+                tracing::info!("shutdown signal; finishing group");
                 break;
             }
         };

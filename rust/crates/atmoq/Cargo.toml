@@ -24,6 +24,9 @@ moq-native = { package = "atmoq-moq-native", version = "0.17.0", path = "../../v
 moq-native-07.workspace = true
 moq-net = { package = "atmoq-moq-net", version = "0.1.12", path = "../../vendor/moq-net" }
 moq-transport-07.workspace = true
+opentelemetry = "0.32"
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 rustls-pemfile = "2"
 serde.workspace = true
@@ -45,6 +48,7 @@ tokio-rustls = "0.26"
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-logfmt = "0.3.7"
+tracing-opentelemetry = "0.33"
 tracing-subscriber.workspace = true
 url.workspace = true
 
