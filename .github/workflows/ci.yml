@@ -53,6 +53,32 @@ jobs:
       # Plain `cargo test` covers unit, integration, and doctests.
       - run: cargo test --manifest-path rust/Cargo.toml --workspace --locked
 
+  rust-profiling:
+    name: rust profiling feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          # Its own cache: this job builds jemalloc from source under a
+          # different feature set, so sharing with rust-clippy would thrash.
+          key: profiling
+      # `profiling` is off by default, so every job above compiles none of the
+      # jemalloc-gated code. Without this it bit-rots silently and only breaks
+      # when someone reaches for a heap profile mid-incident — the worst
+      # possible moment to discover the build is broken.
+      - run: cargo clippy -p atmoq --manifest-path rust/Cargo.toml --all-targets --locked --features profiling -- -D warnings
+      - run: cargo test -p atmoq --manifest-path rust/Cargo.toml --locked --features profiling
+      # The vendored moq-net fork is *excluded* from the workspace (so
+      # `--workspace` above skips it), which means the four patches we carry
+      # there — including the in-flight gauge and its tests — are otherwise
+      # tested nowhere. It's a small crate; run its suite.
+      - run: cargo test --manifest-path rust/vendor/moq-net/Cargo.toml --locked
+
   rust-build:
     name: rust build (${{ matrix.target }})
     runs-on: ubuntu-latest
