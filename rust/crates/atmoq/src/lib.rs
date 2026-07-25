@@ -2,6 +2,7 @@ pub mod car;
 pub mod dialect07;
 pub mod drisl;
 pub mod frame;
+pub mod heap;
 pub mod ingest;
 pub mod json;
 pub mod metrics;

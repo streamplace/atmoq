@@ -201,10 +201,22 @@ fn admin_route(
                 "ok: starting, no frames relayed yet\n".to_owned(),
             ),
         },
+        // A jemalloc heap profile, naming the call sites holding live memory.
+        // Two distinct failure modes get distinct messages: not built with the
+        // feature, versus built but not armed via MALLOC_CONF. They need
+        // different fixes and conflating them wastes an operator's afternoon.
+        "/debug/heap" => match crate::heap::dump() {
+            Ok(profile) => ("200 OK", "text/plain; charset=utf-8", profile),
+            Err(err) => (
+                "501 Not Implemented",
+                "text/plain; charset=utf-8",
+                format!("{err}\n"),
+            ),
+        },
         _ => (
             "404 Not Found",
             "text/plain; charset=utf-8",
-            "not found\n\navailable: /metrics /healthz\n".to_owned(),
+            "not found\n\navailable: /metrics /healthz /debug/heap\n".to_owned(),
         ),
     }
 }

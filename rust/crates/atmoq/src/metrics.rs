@@ -302,6 +302,46 @@ impl Metrics {
             ));
         }
 
+        // Allocator internals, when built with the `profiling` feature. The
+        // pair that matters is allocated vs resident: allocated tracking RSS
+        // means genuine retention, resident climbing while allocated stays
+        // flat means the allocator is sitting on pages it can't hand back.
+        // Distinguishing those two took a heap walk during the 2026-07
+        // incident; here it's a division.
+        if let Some(s) = crate::heap::stats() {
+            for (name, help, value) in [
+                (
+                    "jemalloc_allocated_bytes",
+                    "Bytes currently allocated to the application.",
+                    s.allocated,
+                ),
+                (
+                    "jemalloc_active_bytes",
+                    "Bytes in active pages backing allocations.",
+                    s.active,
+                ),
+                (
+                    "jemalloc_resident_bytes",
+                    "Bytes the allocator holds resident from the OS.",
+                    s.resident,
+                ),
+                (
+                    "jemalloc_mapped_bytes",
+                    "Bytes mapped into the address space.",
+                    s.mapped,
+                ),
+                (
+                    "jemalloc_retained_bytes",
+                    "Bytes unmapped but retained for reuse.",
+                    s.retained,
+                ),
+            ] {
+                out.push_str(&format!(
+                    "# HELP atmoq_{name} {help}\n# TYPE atmoq_{name} gauge\natmoq_{name} {value}\n"
+                ));
+            }
+        }
+
         if let Some(rss) = process_rss_bytes() {
             out.push_str(&format!(
                 "# HELP atmoq_process_resident_bytes Process resident set size.\n\

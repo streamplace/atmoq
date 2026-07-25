@@ -12,6 +12,29 @@ use atmoq::{
 };
 use base64::Engine;
 use bytes::Bytes;
+
+// Heap profiling needs jemalloc to *be* the allocator, so this swap is what
+// the `profiling` feature actually buys. Off by default: building jemalloc
+// from source and changing the allocator is not a decision to make on behalf
+// of everyone who runs `cargo install atmoq`. See heap.rs.
+#[cfg(feature = "profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// jemalloc reads its configuration before main runs, so profiling has to be
+// armed here rather than from code. Doing it statically also sidesteps a trap:
+// tikv-jemalloc-sys prefixes its symbols, so the environment variable is
+// `_RJEM_MALLOC_CONF`, *not* `MALLOC_CONF` — setting the obvious one leaves
+// profiling silently disarmed and /debug/heap returning an error that looks
+// like a build problem.
+//
+// lg_prof_sample:19 samples every ~512 KiB allocated. That is cheap enough to
+// leave on in production and far more than enough resolution to localize a
+// leak measured in gigabytes per hour.
+#[cfg(feature = "profiling")]
+#[allow(non_upper_case_globals)]
+#[export_name = "_rjem_malloc_conf"]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 use clap::{Parser, Subcommand};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
