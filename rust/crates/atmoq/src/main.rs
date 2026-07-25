@@ -284,21 +284,60 @@ async fn main() -> anyhow::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("install rustls crypto provider");
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        // tracing-subscriber colorizes unconditionally — it does not check for a
-        // tty — so without this every line carries ANSI escapes into the
-        // container log, and from there into Loki, where they corrupt field
-        // extraction and every grep needs a sed to undo them.
-        .with_ansi(false)
-        .init();
+    init_logging();
     match Cli::parse().cmd {
         Cmd::Firehose(args) => firehose(args).await,
         Cmd::Relay(args) => relay(args).await,
         Cmd::Serve(args) => serve(args).await,
+    }
+}
+
+/// Install the log subscriber, choosing a format from whether stderr is a
+/// terminal.
+///
+/// Interactive runs (a human watching `atmoq firehose`) get the pretty
+/// human-readable format with colour. Anything piped or containerized gets
+/// logfmt, which is what Loki parses into fields — and which, unlike the
+/// default formatter, is not full of ANSI escapes. tracing-subscriber
+/// colorizes unconditionally without checking for a tty, so production logs
+/// were carrying escape codes all the way into log storage.
+///
+/// `ATMOQ_LOG_FORMAT=logfmt|text` overrides the detection, for the cases where
+/// it guesses wrong (a tty inside a container, or piping to `less -R`).
+fn init_logging() {
+    use std::io::IsTerminal;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let logfmt = match std::env::var("ATMOQ_LOG_FORMAT").as_deref() {
+        Ok("logfmt") => true,
+        Ok("text") => false,
+        _ => !std::io::stderr().is_terminal(),
+    };
+
+    if logfmt {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                tracing_logfmt::builder()
+                    .with_target(true)
+                    .with_timestamp(true)
+                    .with_level(true)
+                    .layer()
+                    .with_writer(std::io::stderr),
+            )
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            // Colour only for an actual terminal. Someone who forces
+            // ATMOQ_LOG_FORMAT=text and pipes to a file wants text, not text
+            // wrapped in escape codes.
+            .with_ansi(std::io::stderr().is_terminal())
+            .init();
     }
 }
 

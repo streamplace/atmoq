@@ -32,5 +32,6 @@ tokio.workspace = true
 tokio-rustls = "0.26"
 tokio-tungstenite.workspace = true
 tracing.workspace = true
+tracing-logfmt = "0.3.7"
 tracing-subscriber.workspace = true
 url.workspace = true
