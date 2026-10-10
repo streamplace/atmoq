@@ -90,7 +90,7 @@ type Options struct {
 
 // Session is a live moq-lite connection to a relay or server.
 type Session struct {
-	conn    quic.Connection
+	conn    *quic.Conn
 	version string
 	log     *slog.Logger
 
@@ -331,7 +331,7 @@ func (s *Session) acceptLoop() {
 // dispatchGroupStream reads a stream's type and group header, then hands it to
 // the owning subscription. Streams for unknown subscriptions or with malformed
 // headers are cancelled so they don't pin flow-control credit.
-func (s *Session) dispatchGroupStream(stream quic.ReceiveStream) {
+func (s *Session) dispatchGroupStream(stream *quic.ReceiveStream) {
 	br := bufio.NewReader(stream)
 
 	kind, err := readUvarint(br)
@@ -398,7 +398,7 @@ type frameItem struct {
 
 // groupStream is an accepted group data stream, header already consumed.
 type groupStream struct {
-	stream quic.ReceiveStream
+	stream *quic.ReceiveStream
 	br     *bufio.Reader
 	seq    uint64
 }
@@ -407,7 +407,7 @@ type groupStream struct {
 type Subscription struct {
 	sess   *Session
 	id     uint64
-	ctrl   quic.Stream
+	ctrl   *quic.Stream
 	frames chan frameItem
 
 	// Pending group streams, drained in accept order by run(). The queue
