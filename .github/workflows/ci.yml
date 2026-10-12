@@ -52,6 +52,8 @@ jobs:
           workspaces: rust
       # Plain `cargo test` covers unit, integration, and doctests.
       - run: cargo test --manifest-path rust/Cargo.toml --workspace --locked
+      - name: Certificate watcher regression
+        run: cargo test --manifest-path rust/vendor/moq-native/Cargo.toml --locked --lib watch::tests
 
   rust-build:
     name: rust build (${{ matrix.target }})

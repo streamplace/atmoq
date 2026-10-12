@@ -24,6 +24,7 @@ test: rust-test-unit go-test ts-test
 # Rust unit tests
 rust-test-unit:
     cd rust && cargo test --workspace --locked
+    cargo test --manifest-path rust/vendor/moq-native/Cargo.toml --locked --lib watch::tests
 
 # Build the e2e harness Docker image (PLC + PDS + indigo relay oracle + atmoq)
 rust-build-e2e:
