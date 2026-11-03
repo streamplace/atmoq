@@ -42,9 +42,9 @@ url = "2"
 #      from a pluggable (disk-backed) source on resume (see --backfill-window-secs).
 # The patched moq-net lives in-tree at vendor/moq-net and is published to
 # crates.io as `atmoq-moq-net` so `cargo install atmoq` works; vendor/moq-native
-# republishes an UNMODIFIED moq-native 0.17.0 as `atmoq-moq-native` solely so
-# its moq-net dep resolves to the fork (moq-net types cross the moq-native API
-# boundary, so both sides must use the same crate). atmoq consumes both via
-# dependency renaming with path+version deps in crates/atmoq/Cargo.toml — path
+# republishes moq-native 0.17.0 as `atmoq-moq-native` so its moq-net dependency
+# resolves to the fork (types cross the native API boundary). The vendored
+# native crate also ignores file-access events to prevent certificate reload
+# loops on Linux. atmoq consumes both via path+version dependencies — path
 # wins locally, version is what ships in the published manifest. Drop all of
 # this and pin released moq-net/moq-native once both changes land upstream.

@@ -32,7 +32,12 @@ impl FileWatcher {
 		// notify emits per change (and any unrelated churn in the directory): a
 		// full buffer already has a pending wakeup, so extra sends are dropped.
 		let (tx, rx) = mpsc::channel(1);
-		let mut watcher = notify::recommended_watcher(move |_event| {
+		let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+			// Reloading reads these files. Linux reports those reads as access
+			// events, so treating them as changes creates a self-triggering loop.
+			if matches!(&event, Ok(event) if matches!(&event.kind, notify::EventKind::Access(_))) {
+				return;
+			}
 			let _ = tx.try_send(());
 		})?;
 
@@ -60,5 +65,45 @@ impl FileWatcher {
 			.recv()
 			.await
 			.expect("file watcher channel closed unexpectedly");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::FileWatcher;
+	use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+	#[tokio::test]
+	async fn certificate_reads_do_not_reload_but_rotation_does() {
+		let dir = std::env::temp_dir().join(format!(
+			"atmoq-cert-watch-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		std::fs::create_dir(&dir).unwrap();
+		let cert = dir.join("cert.pem");
+		std::fs::write(&cert, b"original certificate").unwrap();
+		let replacement = dir.join("replacement.pem");
+		std::fs::write(&replacement, b"rotated certificate").unwrap();
+		let mut watcher = FileWatcher::new(std::slice::from_ref(&cert)).unwrap();
+
+		for _ in 0..3 {
+			assert_eq!(std::fs::read(&cert).unwrap(), b"original certificate");
+		}
+		assert!(
+			tokio::time::timeout(Duration::from_millis(300), watcher.changed())
+				.await
+				.is_err(),
+			"reading certificates must not trigger another reload"
+		);
+
+		// Secret mounts and editors commonly rotate certificates by rename.
+		std::fs::rename(&replacement, &cert).unwrap();
+		tokio::time::timeout(Duration::from_secs(3), watcher.changed())
+			.await
+			.expect("certificate rotation must wake the loader");
+		assert_eq!(std::fs::read(&cert).unwrap(), b"rotated certificate");
+		drop(watcher);
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 }

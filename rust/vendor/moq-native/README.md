@@ -1,10 +1,11 @@
 > [!IMPORTANT]
-> This is `atmoq-moq-native`, a **temporary, unmodified republish** of
+> This is `atmoq-moq-native`, a **temporary republish** of
 > [`moq-native`](https://crates.io/crates/moq-native) 0.17.0
-> ([moq-dev/moq](https://github.com/moq-dev/moq)). The only delta is its manifest:
-> the `moq-net` dependency resolves to [`atmoq-moq-net`](https://crates.io/crates/atmoq-moq-net),
-> a fork carrying two additive replay patches [atmoq](https://github.com/streamplace/atmoq)
-> needs while upstreaming is negotiated. `src/` is byte-identical to upstream.
+> ([moq-dev/moq](https://github.com/moq-dev/moq)). Its manifest redirects
+> `moq-net` to [`atmoq-moq-net`](https://crates.io/crates/atmoq-moq-net),
+> which carries the replay patches [atmoq](https://github.com/streamplace/atmoq)
+> needs. The vendored source also ignores file-access notifications: reading
+> certificates during reload must not trigger another reload on Linux.
 > Unless you are atmoq, you want the real `moq-native`. This crate will be
 > deprecated once the patches (or an equivalent) land upstream.
 
