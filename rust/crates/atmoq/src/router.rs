@@ -64,6 +64,7 @@ impl DidRouter {
         group_size: usize,
         replay_window_secs: u64,
         max_tracks: usize,
+        metrics: Arc<crate::metrics::Metrics>,
     ) -> Self {
         let max_tracks = if max_tracks == 0 {
             MAX_DID_TRACKS
@@ -114,6 +115,9 @@ impl DidRouter {
                 {
                     let mut map = active.lock().unwrap();
                     if map.len() >= max_tracks {
+                        metrics
+                            .did_tracks_refused_total
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         tracing::warn!(%did, max = max_tracks, "per-DID track cap reached; rejecting");
                         producer.abort(moq_net::Error::NotFound).ok();
                         continue;
@@ -128,6 +132,9 @@ impl DidRouter {
                         },
                     );
                 }
+                metrics
+                    .did_tracks_opened_total
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::info!(%did, "serving per-DID track");
 
                 // Mirror moq-net's own unused-track cleanup: when the last
@@ -139,11 +146,15 @@ impl DidRouter {
                 // attached to a track that never receives another frame.
                 let active = active.clone();
                 let watch = producer.clone();
+                let closed_metrics = metrics.clone();
                 tokio::spawn(async move {
                     let _ = watch.unused().await;
                     let mut map = active.lock().unwrap();
                     if map.get(&did).is_some_and(|t| t.generation == generation) {
                         map.remove(&did);
+                        closed_metrics
+                            .did_tracks_closed_total
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         tracing::info!(%did, "per-DID track idle; dropped");
                     }
                 });

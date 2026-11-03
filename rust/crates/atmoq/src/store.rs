@@ -124,6 +124,19 @@ impl GroupStore {
         self.index.keys().next().copied()
     }
 
+    /// Number of groups in the index. Exported as a gauge on the GC tick rather
+    /// than per-append: it only changes meaningfully over minutes, and the
+    /// pump's hot path should not pay for a metric nobody reads at that rate.
+    pub fn indexed_groups(&self) -> u64 {
+        self.index.len() as u64
+    }
+
+    /// Total size of all segments on disk. Summed from the in-memory segment
+    /// table, so this never touches the filesystem.
+    pub fn total_bytes(&self) -> u64 {
+        self.segments.iter().map(|s| s.bytes).sum()
+    }
+
     /// Append a group's frames. `created_ms` is the wall-clock time used for GC.
     pub fn append(&mut self, seq: u64, created_ms: u64, frames: &[Bytes]) -> Result<()> {
         self.ensure_writer(seq)?;

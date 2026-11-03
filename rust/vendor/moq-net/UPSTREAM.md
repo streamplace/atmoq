@@ -1,13 +1,19 @@
 # Upstreaming notes
 
 This is a vendored copy of [`moq-net`](https://crates.io/crates/moq-net) `0.1.10`
-(kixelated's [moq-dev/moq](https://github.com/moq-dev/moq) lite stack) with two
-additive changes intended to go upstream. The repo is laid out so each change
-diffs cleanly on top of the pristine base:
+(kixelated's [moq-dev/moq](https://github.com/moq-dev/moq) lite stack) with four
+changes intended to go upstream. The repo is laid out so each change diffs
+cleanly on top of the pristine base:
 
 1. `vendor moq-net 0.1.10 (unmodified, from crates.io)` — pristine base.
 2. Configurable per-track group retention (below).
 3. Pluggable `GroupSource` for a deep, out-of-RAM replay window (below).
+4. Cancel-safe `Writer` writes, fixing group-stream corruption under priority
+   churn + backpressure (below).
+5. In-flight group gauge, making a stuck subscriber's retained-group backlog
+   observable (below).
+
+All are additive except (4), which is a bug fix.
 
 So that `cargo install atmoq` works before these land upstream, this copy is
 published to crates.io under the fork name
@@ -125,3 +131,37 @@ override (or, arguably, in `select!`-racing a non-cancel-safe write). Worth
 filing against both: web-transport-quinn's override violates the implicit
 cancel-safety contract of the trait default, and every `moq-net` release built
 on it can corrupt streams under priority churn + backpressure.
+
+## Change: in-flight group gauge (`src/inflight.rs`)
+
+`run_track` in `src/lite/publisher.rs` spawns one `serve_group` task per group
+into an **unbounded** `FuturesUnordered`. Each pending task holds a
+`GroupConsumer`, which keeps that group's frames alive *past the track cache's
+own age-based eviction*. A subscriber that stops draining — flow-control
+stalled, or its own downstream blocked — therefore pins group memory for as
+long as it stays connected, and memory grows with the publish rate.
+
+Nothing about that backlog is observable from outside the process: QUIC
+multiplexes every session onto one UDP socket, so there is no socket, no fd,
+and no queue depth to inspect. Diagnosing an instance of this in production
+(streamplace.network, 2026-07: 128 GB RSS over 20h, ~370 KB retained per group
+rotated) required walking a 122 GiB heap by hand.
+
+This change is purely additive and does not alter behavior:
+
+- adds `src/inflight.rs` with process-global `groups_in_flight()` /
+  `groups_in_flight_max()` accessors and an RAII `InFlightGroup` guard,
+- `run_track` holds a guard alongside each queued `serve_group` task, so the
+  count decrements on completion *and* on cancellation,
+- adds two unit tests.
+
+The guard is deliberately global rather than per-session: the sessions that
+would own it are constructed inside the accept path with no handle reaching the
+embedding application. A per-subscription breakdown is the natural follow-up
+once someone needs to attribute a backlog to a specific peer.
+
+**Upstream note:** the gauge is a diagnostic for a real unboundedness. The
+actual fix is to bound the queue and drop the oldest pending group under
+pressure — which MoQ explicitly permits a relay to do under congestion — but
+that changes delivery behavior, so it is deliberately a separate change from
+merely being able to see the problem.

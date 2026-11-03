@@ -15,6 +15,7 @@ pub async fn subscribe_repos(
     upstream: &str,
     cursor: Option<i64>,
     tx: mpsc::Sender<Frame>,
+    metrics: &crate::metrics::Metrics,
 ) -> Result<()> {
     let mut url = Url::parse(upstream).context("parsing upstream URL")?;
     url.set_path("/xrpc/com.atproto.sync.subscribeRepos");
@@ -40,7 +41,12 @@ pub async fn subscribe_repos(
                 Err(err) => {
                     // Rejected: invalid DRISL or not at-sync-shaped. atmoq is
                     // DRISL-strict by design (see drisl.rs) — the frame is not
-                    // republished; the relay carries valid frames only.
+                    // republished; the relay carries valid frames only. Counted
+                    // because a rising reject rate means either an upstream
+                    // change or a validator bug, and both are silent otherwise.
+                    metrics
+                        .frames_rejected_total
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     tracing::warn!(err = format!("{err:#}"), "rejecting frame");
                 }
             },
