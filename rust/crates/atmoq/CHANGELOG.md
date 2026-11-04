@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Stop the Linux certificate-reload feedback loop in the vendored native transport by ignoring read/access notifications.
+- Detect dead upstream WebSockets: ping every 15s, reconnect after 45s of silence, 30s connect timeout.
 
 ## [0.1.1](https://github.com/streamplace/atmoq/compare/v0.1.0...v0.1.1) - 2026-07-16
 
