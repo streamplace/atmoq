@@ -106,6 +106,15 @@ jobs:
           key: ${{ matrix.target }}
       - run: cargo build --manifest-path rust/Cargo.toml --workspace --release --locked --bins --target ${{ matrix.target }}
 
+  fork-crates:
+    name: fork crates published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # release-plz publishes atmoq only; the vendored forks must already be on crates.io.
+      - run: .github/scripts/check-fork-crates.sh
+
   # --- Go (go/) ------------------------------------------------------------
   go-fmt:
     name: gofmt
