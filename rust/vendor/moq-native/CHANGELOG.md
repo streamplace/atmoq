@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-04 (atmoq-moq-native fork)
+
 ### Fixed
 
 - Ignore file-access notifications so certificate reloads do not trigger themselves on Linux; atomic certificate replacement still reloads.
