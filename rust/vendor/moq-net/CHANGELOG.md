@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-07-25 (atmoq-moq-net fork)
+
+### Added
+
+- `groups_in_flight()` / `groups_in_flight_max()`: process-global count of
+  queued serve_group tasks, to observe subscribers that stop draining.
+
 ## [0.1.11] - 2026-07-15 (atmoq-moq-net fork)
 
 ### Fixed

@@ -12,15 +12,14 @@
 [package]
 edition = "2024"
 rust-version = "1.85"
-# UNMODIFIED moq-native 0.17.0, republished under a fork name for one reason
-# only: its moq-net dependency must resolve to atmoq-moq-net (our patched
-# fork, see ../moq-net/UPSTREAM.md) so that moq-net types are identical across
-# the moq-native API boundary. Zero source changes — diff `src/` against the
-# moq-native 0.17.0 crate to verify. The lib name stays `moq_native`;
-# consumers use dependency renaming:
+# moq-native 0.17.0, republished under a fork name so its moq-net dependency
+# resolves to atmoq-moq-net (our patched fork, see ../moq-net/UPSTREAM.md) and
+# moq-net types are identical across the moq-native API boundary. Only source
+# change: src/watch.rs ignores file-access events (cert reload loop on Linux).
+# The lib name stays `moq_native`; consumers use dependency renaming:
 #   moq-native = { package = "atmoq-moq-native", version = "..." }
 name = "atmoq-moq-native"
-version = "0.17.0"
+version = "0.17.1"
 authors = ["Luke Curley", "Eli Mallon <eli@aquareum.tv>"]
 build = false
 autolib = false
@@ -28,7 +27,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "TEMPORARY unmodified republish of moq-native 0.17.0 against atmoq-moq-net, pending upstreaming. Use moq-native unless you are atmoq."
+description = "TEMPORARY republish of moq-native 0.17.0 against atmoq-moq-net, pending upstreaming. Use moq-native unless you are atmoq."
 readme = "README.md"
 keywords = [
     "quic",
