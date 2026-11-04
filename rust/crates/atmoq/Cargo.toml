@@ -52,6 +52,10 @@ tracing-opentelemetry = "0.33"
 tracing-subscriber.workspace = true
 url.workspace = true
 
+[dev-dependencies]
+# Paused clock, so ingest's keepalive timeouts are tested without real waits.
+tokio = { workspace = true, features = ["test-util"] }
+
 [features]
 default = []
 # Swaps in jemalloc as the global allocator with heap profiling compiled in,
