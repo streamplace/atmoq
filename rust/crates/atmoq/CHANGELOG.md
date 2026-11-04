@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/streamplace/atmoq/compare/v0.1.1...v0.2.0) - 2026-11-04
+
+### Added
+
+- export OTLP traces, and handle SIGTERM on shutdown
+- *(moq-net)* add in-flight group gauge
+- add jemalloc heap profiling behind a `profiling` feature
+- emit logfmt when stderr is not a terminal
+- expose Prometheus metrics and a real health endpoint
+
+### Other
+
+- retry stuck websockets
+- Merge pull request #20 from streamplace/gpt61/fix-cert-reload
+- Ignore certificate access notifications to stop reload feedback
+- add relay conformance testing
+
 ### Fixed
 
 - Stop the Linux certificate-reload feedback loop in the vendored native transport by ignoring read/access notifications.
