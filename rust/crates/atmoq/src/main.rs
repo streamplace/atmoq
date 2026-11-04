@@ -1,4 +1,4 @@
-//! atmoq: atproto firehose over MoQ transport.
+//! atmoq: atproto firehose over MoQ transport!
 //!
 //! CLI shape follows goat (github.com/bluesky-social/goat) where the
 //! commands overlap: `atmoq firehose` streams events like
