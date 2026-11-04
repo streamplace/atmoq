@@ -1,0 +1,65 @@
+name: release binaries
+
+# Shared by release-plz.yml (real upload) and ci.yml (dry run on every PR), so
+# PRs exercise exactly the build that ships.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and upload to; empty for a dry run of the current ref"
+        type: string
+        default: ""
+      dry-run:
+        description: "Build and archive, but don't upload"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: aarch64-apple-darwin
+            os: macos-14
+          # Cross-compiled from Linux with mingw rather than built on a
+          # Windows runner: the gnu target needs no NASM/MSVC toolchain and
+          # is what we've verified against a real Windows box.
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            packages: gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - if: matrix.packages
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          # The Rust workspace is in rust/; point the action at its manifest.
+          manifest-path: rust/Cargo.toml
+          bin: atmoq
+          target: ${{ matrix.target }}
+          # Default is `cross` for non-host targets; use the runner's mingw instead.
+          build-tool: cargo
+          archive: atmoq-$tag-$target
+          checksum: sha256
+          # Upload to the tag release-plz just created, not the push event.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
+          dry-run: ${{ inputs.dry-run }}
+          dry-run-intended: ${{ inputs.dry-run }}

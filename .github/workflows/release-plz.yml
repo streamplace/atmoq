@@ -192,54 +192,14 @@ jobs:
   # Build native binaries for each target and attach them to the release that
   # the `release` job just created. Gated so it only runs on an actual release.
   upload-binaries:
-    name: ${{ matrix.target }}
+    name: binaries
     needs: release
     if: needs.release.outputs.releases_created == 'true'
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-13
-          - target: aarch64-apple-darwin
-            os: macos-14
-          # Cross-compiled from Linux with mingw rather than built on a
-          # Windows runner: the gnu target needs no NASM/MSVC toolchain and
-          # is what we've verified against a real Windows box.
-          - target: x86_64-pc-windows-gnu
-            os: ubuntu-latest
-            packages: gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
-      - if: matrix.packages
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-          key: ${{ matrix.target }}
-      - uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          # The Rust workspace is in rust/; point the action at its manifest.
-          manifest-path: rust/Cargo.toml
-          bin: atmoq
-          target: ${{ matrix.target }}
-          archive: atmoq-$tag-$target
-          checksum: sha256
-          # Upload to the tag release-plz just created, not the push event.
-          ref: refs/tags/${{ fromJSON(needs.release.outputs.releases)[0].tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+    uses: ./.github/workflows/release-binaries.yml
+    with:
+      tag: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
 
   # Build and push the release-versioned image (:X.Y.Z, :X.Y, :latest) to GHCR.
   # The moving :main/:edge/:sha tags are handled by the docker workflow; a tag
