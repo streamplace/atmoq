@@ -17,10 +17,10 @@ use crate::{Error, Result};
 use super::{Frame, FrameConsumer, FrameProducer};
 
 /// Maximum total size of frames cached in a group before old frames are evicted.
-const MAX_GROUP_CACHE: u64 = 32 * 1024 * 1024; // 32 MB
+pub(crate) const MAX_GROUP_CACHE: u64 = 32 * 1024 * 1024; // 32 MB
 
 /// Maximum number of frames cached in a group before old frames are evicted.
-const MAX_GROUP_FRAMES: usize = 1024;
+pub(crate) const MAX_GROUP_FRAMES: usize = 1024;
 
 /// A group contains a sequence number because they can arrive out of order.
 ///

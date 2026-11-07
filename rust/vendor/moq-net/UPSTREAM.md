@@ -185,19 +185,23 @@ from streamplace.network):
   Stream priority can't order them: priorities are relative `u8` ranks, and
   quinn only applies a change to data not yet buffered.
 
-Replay now runs from `max(G, oldest)` up to the in-progress group in one
-sequential loop. It reads each group from the cache when present, otherwise
-from the source, and packs up to `REPLAY_GROUPS_PER_STREAM` (16) groups per
-stream, labeled with the first one's sequence. One stream is in flight at a
-time, so bytes land in order, and each round trip carries 16 groups. The live
-loop then starts at the in-progress group. Subscriptions without `start_group`
-are unchanged.
+Replay now runs from `max(G, oldest)`, where `oldest` is the earlier of the cache
+and source floors, up to the in-progress group in one sequential loop. It reads
+each group from the cache when present and intact, otherwise from the source
+(a cached group that failed upstream is skipped only if the source lacks it too),
+and packs up to `REPLAY_GROUPS_PER_STREAM` (16) groups per stream, labeled with
+the first one's sequence. A pack also ends before it would pass the group cache's
+limits (`MAX_GROUP_FRAMES`, `MAX_GROUP_CACHE`), which would evict its first
+frames before they're sent. One stream is in flight at a time, so bytes land in
+order, and each round trip carries up to 16 groups. The live loop then starts at
+the in-progress group. Subscriptions without `start_group` are unchanged.
 
 Tradeoffs: during replay, group sequences jump by up to 16, and a subscriber
 that reconnects partway through a packed stream (and resumes from its label)
-receives up to 15 groups again. The unit test
-`replay_packs_groups_into_one_stream_at_a_time` covers throughput under a
-simulated RTT, no overlap, order, and the hand-off to live.
+receives up to 15 groups again. The unit tests
+`replay_packs_groups_into_one_stream_at_a_time` (throughput under a simulated
+RTT, no overlap, order, pack limits, a failed cached group, the hand-off to
+live) and `replay_starts_from_the_cache_when_it_reaches_further_back` cover it.
 
 **Upstream note:** moq-lite has no FETCH, and replay reuses group streams. A
 real fix upstream would probably let a subscriber that sends `ordered = true`

@@ -1,18 +1,19 @@
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use web_async::FuturesExt;
 use web_transport_trait::Stats;
 
 use crate::{
-	AsPath, BroadcastConsumer, Error, Origin, OriginConsumer, OriginList, StatsHandle as MoqStats, Track,
-	TrackConsumer,
+	AsPath, BroadcastConsumer, Error, GroupSource, MAX_GROUP_CACHE, MAX_GROUP_FRAMES, Origin, OriginConsumer,
+	OriginList, StatsHandle as MoqStats, Track, TrackConsumer,
 	coding::{Stream, Writer},
 	lite::{
 		self,
 		priority::{Priority, PriorityHandle, PriorityQueue},
 	},
-	model::{Group, GroupConsumer},
+	model::{Group, GroupConsumer, GroupProducer},
 };
 
 use super::Version;
@@ -441,29 +442,39 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 		let mut start = track.latest();
 		if let Some(requested) = subscribe.start_group {
 			let source = track.group_source();
-			let oldest = source.as_ref().and_then(|s| s.oldest()).or_else(|| track.oldest());
+			// Start from the earliest group the cache or the source still holds.
+			let oldest = [source.as_ref().and_then(|s| s.oldest()), track.oldest()]
+				.into_iter()
+				.flatten()
+				.min();
 			let mut next = oldest.map_or(requested, |oldest| requested.max(oldest));
+			// A group read for a pack it didn't fit, which leads the next one.
+			let mut carried = None;
 			// Re-read the live edge each pass: replay outruns the live rate, so `next` converges on it.
 			while let Some(latest) = track.latest().filter(|&latest| next < latest) {
 				let end = latest.min(next.saturating_add(REPLAY_GROUPS_PER_STREAM));
-				let mut producer = None;
-				for sequence in next..end {
-					// Cached groups below the live edge are complete; older ones come from the source.
-					if let Some(mut group) = track.get_group(sequence).now_or_never().transpose()?.flatten() {
-						while let Some(frame) = group.read_frame().await? {
-							producer
-								.get_or_insert_with(|| Group { sequence }.produce())
-								.write_frame(frame)?;
-						}
-					} else if let Some(frames) = source.as_ref().and_then(|s| s.group(sequence)) {
-						for frame in frames {
-							producer
-								.get_or_insert_with(|| Group { sequence }.produce())
-								.write_frame(frame)?;
-						}
+				let mut producer: Option<GroupProducer> = None;
+				let (mut frames, mut bytes) = (0, 0);
+				while next < end {
+					let group = match carried.take() {
+						Some(group) => group,
+						None => Self::replay_frames(&track, source.as_deref(), next).await,
+					};
+					let size: u64 = group.iter().map(|frame| frame.len() as u64).sum();
+					// Past the group cache's limits, a pack's first frames are evicted before they're sent.
+					if producer.is_some() && (frames + group.len() > MAX_GROUP_FRAMES || bytes + size > MAX_GROUP_CACHE)
+					{
+						carried = Some(group);
+						break;
 					}
+					(frames, bytes) = (frames + group.len(), bytes + size);
+					for frame in group {
+						producer
+							.get_or_insert_with(|| Group { sequence: next }.produce())
+							.write_frame(frame)?;
+					}
+					next += 1;
 				}
-				next = end;
 				let Some(mut producer) = producer else {
 					continue;
 				};
@@ -534,6 +545,25 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 				.map(move |_| drop(in_flight)),
 			);
 		}
+	}
+
+	/// A group's frames for replay: from the cache, or the source if the cache lacks it or
+	/// holds it failed (e.g. an upstream reset); empty if neither has it.
+	async fn replay_frames(track: &TrackConsumer, source: Option<&dyn GroupSource>, sequence: u64) -> Vec<Bytes> {
+		if let Some(Ok(Some(mut group))) = track.get_group(sequence).now_or_never() {
+			let mut frames = Vec::new();
+			loop {
+				match group.read_frame().await {
+					Ok(Some(frame)) => frames.push(frame),
+					Ok(None) => return frames,
+					Err(err) => {
+						tracing::debug!(sequence, %err, "cached group failed; replaying from the source");
+						break;
+					}
+				}
+			}
+		}
+		source.and_then(|s| s.group(sequence)).unwrap_or_default()
 	}
 
 	async fn serve_group(
@@ -767,47 +797,48 @@ mod tests {
 		}
 	}
 
-	/// Stored groups `[0, end)`, each holding one frame with its own sequence; `missing` is absent.
+	/// Frames per group: enough that a full pack of groups overflows the group cache.
+	const FRAMES: usize = 100;
+
+	fn frames_of(sequence: u64) -> Vec<Bytes> {
+		vec![Bytes::from(sequence.to_string()); FRAMES]
+	}
+
+	/// Stored groups `[oldest, end)`, each holding `FRAMES` frames of its own sequence; `missing` is absent.
 	struct Source {
+		oldest: u64,
 		end: u64,
 		missing: u64,
 	}
 
 	impl crate::GroupSource for Source {
 		fn group(&self, sequence: u64) -> Option<Vec<Bytes>> {
-			(sequence < self.end && sequence != self.missing).then(|| vec![Bytes::from(sequence.to_string())])
+			((self.oldest..self.end).contains(&sequence) && sequence != self.missing).then(|| frames_of(sequence))
 		}
 
 		fn oldest(&self) -> Option<u64> {
-			Some(0)
+			Some(self.oldest)
 		}
 	}
 
-	// A resume must not cost a round trip per group (slower than live on high-latency
-	// links), and must keep one stream in flight so groups land in order: concurrent
-	// streams deadlock in-order readers on connection flow control.
-	#[tokio::test(start_paused = true)]
-	async fn replay_packs_groups_into_one_stream_at_a_time() {
-		const STORED: u64 = 64;
-		const LIVE: u64 = STORED + 8;
-		let version = Version::Lite04;
-
-		let mut producer = Track::new("t").produce();
-		// Like atmoq's store, the source also holds the completed groups still cached.
-		// Group 0 is missing, so the first pack is labeled with group 1.
-		producer
-			.set_group_source(Arc::new(Source { end: LIVE, missing: 0 }))
-			.unwrap();
-		let mut cached: Vec<_> = (STORED..LIVE)
+	/// Caches finished groups for `sequences`; they stay cached while the producers live.
+	fn cache(producer: &mut crate::TrackProducer, sequences: std::ops::Range<u64>) -> Vec<GroupProducer> {
+		sequences
 			.map(|sequence| {
 				let mut group = producer.create_group(Group { sequence }).unwrap();
-				group.write_frame(Bytes::from(sequence.to_string())).unwrap();
+				for frame in frames_of(sequence) {
+					group.write_frame(frame).unwrap();
+				}
 				group.finish().unwrap();
 				group
 			})
-			.collect();
-		cached.push(producer.create_group(Group { sequence: LIVE }).unwrap());
+			.collect()
+	}
 
+	/// Resumes a subscriber from group 0 until the in-progress group `live` goes out, returning
+	/// how long that took, the most streams in flight at once, and each stream's label and frames.
+	async fn replay(track: TrackConsumer, live: u64) -> (Duration, usize, Vec<(u64, Vec<String>)>) {
+		let version = Version::Lite04;
 		let session = RttSession::default();
 		let subscribe = lite::Subscribe {
 			id: 0,
@@ -825,7 +856,7 @@ mod tests {
 		let start = tokio::time::Instant::now();
 		let run = Publisher::run_track(
 			session.clone(),
-			producer.consume(),
+			track,
 			&subscribe,
 			PriorityQueue::default(),
 			stats,
@@ -836,7 +867,7 @@ mod tests {
 		let replayed = async {
 			loop {
 				let last = session.wire.lock().unwrap().streams.last().cloned();
-				if last.and_then(|s| parse(&s, version)).map(|(label, _)| label) == Some(LIVE) {
+				if last.and_then(|s| parse(&s, version)).map(|(label, _)| label) == Some(live) {
 					break;
 				}
 				tokio::time::sleep(Duration::from_millis(1)).await;
@@ -846,23 +877,74 @@ mod tests {
 			res = run => panic!("run_track ended early: {res:?}"),
 			_ = replayed => {}
 		}
+		let elapsed = start.elapsed();
+
+		let wire = session.wire.lock().unwrap();
+		let streams = wire.streams.iter().map(|s| parse(s, version).unwrap()).collect();
+		(elapsed, wire.max_unacked, streams)
+	}
+
+	// A resume must not cost a round trip per group (slower than live on high-latency
+	// links), and must keep one stream in flight so groups land in order: concurrent
+	// streams deadlock in-order readers on connection flow control. Packs stay within the
+	// group cache, and a cached group that failed upstream is replayed from the source.
+	#[tokio::test(start_paused = true)]
+	async fn replay_packs_groups_into_one_stream_at_a_time() {
+		const STORED: u64 = 64;
+		const LIVE: u64 = STORED + 8;
+
+		let mut producer = Track::new("t").produce();
+		// Like atmoq's store, the source also holds the completed groups still cached.
+		// Group 0 is missing, so the first pack is labeled with group 1.
+		producer
+			.set_group_source(Arc::new(Source {
+				oldest: 0,
+				end: LIVE,
+				missing: 0,
+			}))
+			.unwrap();
+		let mut reset = producer.create_group(Group { sequence: STORED }).unwrap();
+		reset.write_frame(Bytes::from("partial")).unwrap();
+		reset.abort(Error::Cancel).unwrap();
+		let _cached = cache(&mut producer, STORED + 1..LIVE);
+		let _live = producer.create_group(Group { sequence: LIVE }).unwrap();
+
+		let (elapsed, max_unacked, streams) = replay(producer.consume(), LIVE).await;
 
 		// Unpacked replay takes LIVE round trips; packing must cut that well down.
 		assert!(
-			start.elapsed() < RTT * (LIVE as u32) / 4,
-			"replay of {LIVE} groups took {:?} at {RTT:?} RTT",
-			start.elapsed()
+			elapsed < RTT * (LIVE as u32) / 4,
+			"replay of {LIVE} groups took {elapsed:?} at {RTT:?} RTT"
 		);
+		assert_eq!(max_unacked, 1, "replay streams must not overlap");
 
-		let wire = session.wire.lock().unwrap();
-		assert_eq!(wire.max_unacked, 1, "replay streams must not overlap");
-
-		let (labels, frames): (Vec<u64>, Vec<Vec<String>>) =
-			wire.streams.iter().map(|s| parse(s, version).unwrap()).unzip();
+		let (labels, frames): (Vec<u64>, Vec<Vec<String>>) = streams.into_iter().unzip();
 		assert_eq!(labels.first(), Some(&1), "labels {labels:?}");
 		assert!(labels.windows(2).all(|w| w[0] < w[1]), "labels {labels:?}");
-		let expected: Vec<String> = (1..LIVE).map(|s| s.to_string()).collect();
+		assert!(
+			frames.iter().all(|f| f.len() <= MAX_GROUP_FRAMES),
+			"a pack overflows the group cache"
+		);
+		let expected: Vec<String> = (1..LIVE).flat_map(|s| vec![s.to_string(); FRAMES]).collect();
 		assert_eq!(frames.concat(), expected);
+	}
+
+	// A source trimmed below the cache (e.g. by a size cap) must not hide groups the cache still holds.
+	#[tokio::test(start_paused = true)]
+	async fn replay_starts_from_the_cache_when_it_reaches_further_back() {
+		let mut producer = Track::new("t").produce();
+		producer
+			.set_group_source(Arc::new(Source {
+				oldest: 4,
+				end: 8,
+				missing: u64::MAX,
+			}))
+			.unwrap();
+		let _cached = cache(&mut producer, 0..8);
+		let _live = producer.create_group(Group { sequence: 8 }).unwrap();
+
+		let (_, _, streams) = replay(producer.consume(), 8).await;
+		assert_eq!(streams.first().map(|(label, _)| *label), Some(0));
 	}
 
 	/// Decode a group stream into its sequence label and frames.

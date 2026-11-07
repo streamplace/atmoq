@@ -102,8 +102,10 @@ the track. Implemented via a small moq-net hook + an atmoq `GroupSource`:
   `State.group_source` + `TrackProducer::set_group_source`, `TrackConsumer::oldest()`
   (the in-RAM cache floor) + `group_source()`. In `lite/publisher.rs::run_track`,
   a subscriber's `start_group` is replayed up to the in-progress group in order,
-  reading each group from the cache when present and otherwise from the source.
-  Replay keeps one stream in flight and packs up to 16 groups per stream under
+  from the earlier of the cache and source floors, reading each group from the
+  cache when present and intact and otherwise from the source.
+  Replay keeps one stream in flight and packs up to 16 groups per stream (fewer
+  past the group cache's frame/size limits) under
   the first one's sequence, so it outruns live even at high RTT without
   deadlocking in-order readers, then joins the live loop at the in-progress
   group. The trait is sync and only called on the replay path (never the hot live
