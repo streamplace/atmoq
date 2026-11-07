@@ -101,13 +101,15 @@ the track. Implemented via a small moq-net hook + an atmoq `GroupSource`:
   a `GroupSource` trait (`group(seq) -> Option<Vec<Bytes>>`, `oldest()`),
   `State.group_source` + `TrackProducer::set_group_source`, `TrackConsumer::oldest()`
   (the in-RAM cache floor) + `group_source()`. In `lite/publisher.rs::run_track`,
-  when a subscriber's `start_group` predates the cache floor, it serves
-  `[max(start_group, source.oldest()) .. cache_floor)` from the source as ordinary
-  group streams — one open uni-stream at a time, so the subscriber's flow control
-  paces the backfill — then joins the live loop. The trait is sync and only called
-  on the backfill task (never the hot live loop); the cache floor is re-read each
-  iteration so the backfill converges on the eviction boundary and hands off live
-  without a gap.
+  a subscriber's `start_group` is replayed up to the in-progress group in order,
+  from the earlier of the cache and source floors, reading each group from the
+  cache when present and intact and otherwise from the source.
+  Replay keeps one stream in flight and packs up to 16 groups per stream (fewer
+  past the group cache's frame/size limits) under
+  the first one's sequence, so it outruns live even at high RTT without
+  deadlocking in-order readers, then joins the live loop at the in-progress
+  group. The trait is sync and only called on the replay path (never the hot live
+  loop).
 - **atmoq**: `StoreSource` implements `GroupSource` over the shared
   `Arc<Mutex<store::GroupStore>>` (the same store the pump appends to;
   `read`-by-seq and `oldest_seq` already exist). `build_lite_publisher` wires it
