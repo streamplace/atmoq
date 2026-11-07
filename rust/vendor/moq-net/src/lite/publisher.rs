@@ -17,6 +17,9 @@ use crate::{
 
 use super::Version;
 
+/// Groups packed into each replay stream; replay throughput per round trip.
+const REPLAY_GROUPS_PER_STREAM: u64 = 16;
+
 pub(super) struct PublisherConfig<S: web_transport_trait::Session> {
 	pub session: S,
 	/// The origin we read local broadcasts from. None gives this session a
@@ -430,58 +433,63 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 	) -> Result<(), Error> {
 		let mut tasks = FuturesUnordered::new();
 
-		// Start the consumer at the specified sequence, otherwise start at the latest group.
-		if let Some(start_group) = subscribe.start_group.or_else(|| track.latest()) {
-			track.start_at(start_group);
-		}
-
-		// Deep replay: if the subscriber asked to resume from a group older than
-		// anything still in the in-RAM cache, serve the missing range from the
-		// publisher's group source (e.g. disk) before joining the live stream.
-		// The live `start_at` above already filters the cache to `start_group`,
-		// so the cache serves `[cache_floor..]` and this serves `[start..cache_floor)`.
+		// Replay an explicit start_group in order from the cache, or the publisher's group
+		// source (e.g. disk), up to the in-progress group, then go live from there. Replay
+		// keeps one stream in flight so bytes land in order (concurrent streams deadlock
+		// in-order readers on connection flow control) and packs several groups per stream
+		// under the first one's sequence (unpacked, each costs a round trip: slower than live).
+		let mut start = track.latest();
 		if let Some(requested) = subscribe.start_group {
-			if let Some(source) = track.group_source() {
-				let mut next = match source.oldest() {
-					Some(oldest) => requested.max(oldest),
-					None => requested,
-				};
-				// Serve sequentially (one open uni-stream at a time, so the
-				// subscriber's flow control paces us). Re-read the cache floor
-				// each iteration: disk replay outruns the live rate, so `next`
-				// converges on the slowly-advancing eviction boundary, at which
-				// point the live loop below takes over without a gap.
-				while let Some(cache_floor) = track.oldest() {
-					if next >= cache_floor {
-						break;
-					}
-					if let Some(frames) = source.group(next) {
-						let mut producer = Group { sequence: next }.produce();
-						for frame in frames {
-							producer.write_frame(frame)?;
+			let source = track.group_source();
+			let oldest = source.as_ref().and_then(|s| s.oldest()).or_else(|| track.oldest());
+			let mut next = oldest.map_or(requested, |oldest| requested.max(oldest));
+			// Re-read the live edge each pass: replay outruns the live rate, so `next` converges on it.
+			while let Some(latest) = track.latest().filter(|&latest| next < latest) {
+				let end = latest.min(next.saturating_add(REPLAY_GROUPS_PER_STREAM));
+				let mut producer = None;
+				for sequence in next..end {
+					// Cached groups below the live edge are complete; older ones come from the source.
+					if let Some(mut group) = track.get_group(sequence).now_or_never().transpose()?.flatten() {
+						while let Some(frame) = group.read_frame().await? {
+							producer
+								.get_or_insert_with(|| Group { sequence }.produce())
+								.write_frame(frame)?;
 						}
-						producer.finish()?;
-
-						let msg = lite::Group {
-							subscribe: subscribe.id,
-							sequence: next,
-						};
-						let current_priority = *track_priority.borrow_and_update();
-						let handle = priority.insert(Priority::new(current_priority, next));
-						Self::serve_group(
-							session.clone(),
-							msg,
-							handle,
-							producer.consume(),
-							track_stats.clone(),
-							track_priority.clone(),
-							version,
-						)
-						.await?;
+					} else if let Some(frames) = source.as_ref().and_then(|s| s.group(sequence)) {
+						for frame in frames {
+							producer
+								.get_or_insert_with(|| Group { sequence }.produce())
+								.write_frame(frame)?;
+						}
 					}
-					next += 1;
 				}
+				next = end;
+				let Some(mut producer) = producer else {
+					continue;
+				};
+				producer.finish()?;
+
+				let msg = lite::Group {
+					subscribe: subscribe.id,
+					sequence: producer.sequence,
+				};
+				let current_priority = *track_priority.borrow_and_update();
+				let handle = priority.insert(Priority::new(current_priority, producer.sequence));
+				Self::serve_group(
+					session.clone(),
+					msg,
+					handle,
+					producer.consume(),
+					track_stats.clone(),
+					track_priority.clone(),
+					version,
+				)
+				.await?;
 			}
+			start = Some(next);
+		}
+		if let Some(start) = start {
+			track.start_at(start);
 		}
 
 		loop {
@@ -614,5 +622,259 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 		tracing::debug!(sequence = %msg.sequence, "finished group");
 
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::coding::Decode;
+	use bytes::{Buf, Bytes};
+	use std::sync::{Arc, Mutex};
+
+	const RTT: Duration = Duration::from_millis(100);
+
+	#[derive(Debug)]
+	struct FakeError;
+
+	impl std::fmt::Display for FakeError {
+		fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+			write!(f, "fake transport error")
+		}
+	}
+
+	impl std::error::Error for FakeError {}
+
+	impl web_transport_trait::Error for FakeError {
+		fn session_error(&self) -> Option<(u32, String)> {
+			None
+		}
+	}
+
+	#[derive(Default)]
+	struct Wire {
+		/// Bytes written to each uni stream, in open order.
+		streams: Vec<Vec<u8>>,
+		/// Streams opened but not yet acked, and the most seen at once.
+		unacked: usize,
+		max_unacked: usize,
+	}
+
+	#[derive(Clone, Default)]
+	struct RttSession {
+		wire: Arc<Mutex<Wire>>,
+	}
+
+	impl web_transport_trait::Session for RttSession {
+		type SendStream = RttStream;
+		type RecvStream = NoRecv;
+		type Error = FakeError;
+
+		async fn accept_uni(&self) -> Result<Self::RecvStream, Self::Error> {
+			std::future::pending().await
+		}
+
+		async fn accept_bi(&self) -> Result<(Self::SendStream, Self::RecvStream), Self::Error> {
+			std::future::pending().await
+		}
+
+		async fn open_bi(&self) -> Result<(Self::SendStream, Self::RecvStream), Self::Error> {
+			std::future::pending().await
+		}
+
+		async fn open_uni(&self) -> Result<Self::SendStream, Self::Error> {
+			let mut wire = self.wire.lock().unwrap();
+			wire.streams.push(Vec::new());
+			wire.unacked += 1;
+			wire.max_unacked = wire.max_unacked.max(wire.unacked);
+			Ok(RttStream {
+				wire: self.wire.clone(),
+				index: wire.streams.len() - 1,
+				finished: false,
+			})
+		}
+
+		fn send_datagram(&self, _payload: Bytes) -> Result<(), Self::Error> {
+			Ok(())
+		}
+
+		async fn recv_datagram(&self) -> Result<Bytes, Self::Error> {
+			std::future::pending().await
+		}
+
+		fn max_datagram_size(&self) -> usize {
+			1200
+		}
+
+		fn protocol(&self) -> Option<&str> {
+			None
+		}
+
+		fn close(&self, _code: u32, _reason: &str) {}
+
+		async fn closed(&self) -> Self::Error {
+			std::future::pending().await
+		}
+	}
+
+	/// A send stream whose `closed()` resolves one RTT after `finish()`, like a QUIC peer's ack.
+	struct RttStream {
+		wire: Arc<Mutex<Wire>>,
+		index: usize,
+		finished: bool,
+	}
+
+	impl web_transport_trait::SendStream for RttStream {
+		type Error = FakeError;
+
+		async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+			self.wire.lock().unwrap().streams[self.index].extend_from_slice(buf);
+			Ok(buf.len())
+		}
+
+		fn set_priority(&mut self, _order: u8) {}
+
+		fn finish(&mut self) -> Result<(), Self::Error> {
+			self.finished = true;
+			Ok(())
+		}
+
+		fn reset(&mut self, _code: u32) {}
+
+		async fn closed(&mut self) -> Result<(), Self::Error> {
+			if !self.finished {
+				std::future::pending::<()>().await;
+			}
+			tokio::time::sleep(RTT).await;
+			self.wire.lock().unwrap().unacked -= 1;
+			Ok(())
+		}
+	}
+
+	struct NoRecv;
+
+	impl web_transport_trait::RecvStream for NoRecv {
+		type Error = FakeError;
+
+		async fn read(&mut self, _dst: &mut [u8]) -> Result<Option<usize>, Self::Error> {
+			std::future::pending().await
+		}
+
+		fn stop(&mut self, _code: u32) {}
+
+		async fn closed(&mut self) -> Result<(), Self::Error> {
+			std::future::pending().await
+		}
+	}
+
+	/// Stored groups `[0, end)`, each holding one frame with its own sequence; `missing` is absent.
+	struct Source {
+		end: u64,
+		missing: u64,
+	}
+
+	impl crate::GroupSource for Source {
+		fn group(&self, sequence: u64) -> Option<Vec<Bytes>> {
+			(sequence < self.end && sequence != self.missing).then(|| vec![Bytes::from(sequence.to_string())])
+		}
+
+		fn oldest(&self) -> Option<u64> {
+			Some(0)
+		}
+	}
+
+	// A resume must not cost a round trip per group (slower than live on high-latency
+	// links), and must keep one stream in flight so groups land in order: concurrent
+	// streams deadlock in-order readers on connection flow control.
+	#[tokio::test(start_paused = true)]
+	async fn replay_packs_groups_into_one_stream_at_a_time() {
+		const STORED: u64 = 64;
+		const LIVE: u64 = STORED + 8;
+		let version = Version::Lite04;
+
+		let mut producer = Track::new("t").produce();
+		// Like atmoq's store, the source also holds the completed groups still cached.
+		// Group 0 is missing, so the first pack is labeled with group 1.
+		producer
+			.set_group_source(Arc::new(Source { end: LIVE, missing: 0 }))
+			.unwrap();
+		let mut cached: Vec<_> = (STORED..LIVE)
+			.map(|sequence| {
+				let mut group = producer.create_group(Group { sequence }).unwrap();
+				group.write_frame(Bytes::from(sequence.to_string())).unwrap();
+				group.finish().unwrap();
+				group
+			})
+			.collect();
+		cached.push(producer.create_group(Group { sequence: LIVE }).unwrap());
+
+		let session = RttSession::default();
+		let subscribe = lite::Subscribe {
+			id: 0,
+			broadcast: crate::Path::new("b"),
+			track: "t".into(),
+			priority: 0,
+			ordered: true,
+			max_latency: Duration::ZERO,
+			start_group: Some(0),
+			end_group: None,
+		};
+		let stats = Arc::new(MoqStats::default().broadcast("b").publisher_track("t"));
+		let (_priority_tx, priority_rx) = tokio::sync::watch::channel(0);
+
+		let start = tokio::time::Instant::now();
+		let run = Publisher::run_track(
+			session.clone(),
+			producer.consume(),
+			&subscribe,
+			PriorityQueue::default(),
+			stats,
+			priority_rx,
+			version,
+		);
+		// The in-progress group's stream opens once replay has drained.
+		let replayed = async {
+			loop {
+				let last = session.wire.lock().unwrap().streams.last().cloned();
+				if last.and_then(|s| parse(&s, version)).map(|(label, _)| label) == Some(LIVE) {
+					break;
+				}
+				tokio::time::sleep(Duration::from_millis(1)).await;
+			}
+		};
+		tokio::select! {
+			res = run => panic!("run_track ended early: {res:?}"),
+			_ = replayed => {}
+		}
+
+		// Unpacked replay takes LIVE round trips; packing must cut that well down.
+		assert!(
+			start.elapsed() < RTT * (LIVE as u32) / 4,
+			"replay of {LIVE} groups took {:?} at {RTT:?} RTT",
+			start.elapsed()
+		);
+
+		let wire = session.wire.lock().unwrap();
+		assert_eq!(wire.max_unacked, 1, "replay streams must not overlap");
+
+		let (labels, frames): (Vec<u64>, Vec<Vec<String>>) =
+			wire.streams.iter().map(|s| parse(s, version).unwrap()).unzip();
+		assert_eq!(labels.first(), Some(&1), "labels {labels:?}");
+		assert!(labels.windows(2).all(|w| w[0] < w[1]), "labels {labels:?}");
+		let expected: Vec<String> = (1..LIVE).map(|s| s.to_string()).collect();
+		assert_eq!(frames.concat(), expected);
+	}
+
+	/// Decode a group stream into its sequence label and frames.
+	fn parse(stream: &[u8], version: Version) -> Option<(u64, Vec<String>)> {
+		let mut buf = Bytes::copy_from_slice(stream);
+		lite::DataType::decode(&mut buf, version).ok()?;
+		let label = lite::Group::decode(&mut buf, version).ok()?.sequence;
+		let mut frames = Vec::new();
+		while buf.has_remaining() {
+			let size = u64::decode(&mut buf, version).ok()? as usize;
+			frames.push(String::from_utf8(buf.split_to(size).to_vec()).ok()?);
+		}
+		Some((label, frames))
 	}
 }

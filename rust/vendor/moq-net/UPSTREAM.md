@@ -1,7 +1,7 @@
 # Upstreaming notes
 
 This is a vendored copy of [`moq-net`](https://crates.io/crates/moq-net) `0.1.10`
-(kixelated's [moq-dev/moq](https://github.com/moq-dev/moq) lite stack) with four
+(kixelated's [moq-dev/moq](https://github.com/moq-dev/moq) lite stack) with
 changes intended to go upstream. The repo is laid out so each change diffs
 cleanly on top of the pristine base:
 
@@ -12,8 +12,10 @@ cleanly on top of the pristine base:
    churn + backpressure (below).
 5. In-flight group gauge, making a stuck subscriber's retained-group backlog
    observable (below).
+6. Ordered, packed replay for `start_group`, fixing resumes that stall or never
+   catch up (below).
 
-All are additive except (4), which is a bug fix.
+All are additive except (4) and (6), which are bug fixes.
 
 So that `cargo install atmoq` works before these land upstream, this copy is
 published to crates.io under the fork name
@@ -71,11 +73,8 @@ instead of the in-RAM cache. This change adds that hook:
 - adds two `TrackConsumer` accessors: `oldest()` (the in-RAM cache floor) and
   `group_source()`,
 - in `lite/publisher.rs::run_track`: when a subscriber's `SUBSCRIBE(start_group=G)`
-  predates the cache floor, serve `[max(G, source.oldest()) .. cache_floor)`
-  straight from the source — one open uni-stream at a time, so the subscriber's
-  flow control paces the backfill — before joining the live stream. The cache
-  floor is re-read each iteration so the backfill converges on the (slowly
-  advancing) eviction boundary and hands off to the live loop without a gap.
+  predates the cache floor, serve the evicted groups from the source before
+  joining the live stream (see change 6 for how replay is paced and ordered).
 - adds unit tests `group_source_plumbing` and `oldest_returns_min_live_sequence`.
 
 `None` (no source set) preserves the existing behavior exactly: a `start_group`
@@ -165,3 +164,41 @@ actual fix is to bound the queue and drop the oldest pending group under
 pressure — which MoQ explicitly permits a relay to do under congestion — but
 that changes delivery behavior, so it is deliberately a separate change from
 merely being able to see the problem.
+
+## Change: ordered, packed replay for `start_group` (bug fix)
+
+`run_track` used to serve a `start_group` resume in two phases: evicted groups
+from the `GroupSource` one stream at a time, awaiting each stream's ack, then
+the RAM cache through the live loop, one concurrent `serve_group` task per
+group. Both phases broke a real consumer (atmoq-go reading the atproto firehose
+from streamplace.network):
+
+- **Never catching up.** One stream per round trip is 64 frames per ~2 RTT,
+  about 410 frames/s at 78 ms, under the ~450 frames/s live rate. The replay
+  stayed a fixed distance behind live forever.
+- **Deadlock.** The cached groups are complete, so every concurrent task buffers
+  its whole group at once and quinn round-robins them. A subscriber that reads
+  groups in order (atmoq-go) fills its connection flow-control window with later
+  groups while the one it is reading starves. That consumer reproduced it from
+  as little as 6 cached groups back. Consumers that skip late groups
+  (`TrackConsumer::next_group`) can also drop groups that land out of order.
+  Stream priority can't order them: priorities are relative `u8` ranks, and
+  quinn only applies a change to data not yet buffered.
+
+Replay now runs from `max(G, oldest)` up to the in-progress group in one
+sequential loop. It reads each group from the cache when present, otherwise
+from the source, and packs up to `REPLAY_GROUPS_PER_STREAM` (16) groups per
+stream, labeled with the first one's sequence. One stream is in flight at a
+time, so bytes land in order, and each round trip carries 16 groups. The live
+loop then starts at the in-progress group. Subscriptions without `start_group`
+are unchanged.
+
+Tradeoffs: during replay, group sequences jump by up to 16, and a subscriber
+that reconnects partway through a packed stream (and resumes from its label)
+receives up to 15 groups again. The unit test
+`replay_packs_groups_into_one_stream_at_a_time` covers throughput under a
+simulated RTT, no overlap, order, and the hand-off to live.
+
+**Upstream note:** moq-lite has no FETCH, and replay reuses group streams. A
+real fix upstream would probably let a subscriber that sends `ordered = true`
+get ordered, serially paced delivery of completed groups.

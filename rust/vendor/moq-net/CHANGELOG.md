@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `start_group` resume is now replayed from the cache or `GroupSource` in
+  order, one stream at a time, with up to 16 groups packed per stream. Before,
+  replay could fall permanently behind live on high-latency links, and cached
+  groups served concurrently could deadlock in-order readers on flow control.
+
 ## [0.1.12] - 2026-07-25 (atmoq-moq-net fork)
 
 ### Added
